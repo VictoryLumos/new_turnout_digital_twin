@@ -1,0 +1,402 @@
+[
+  {
+    "time": 0.0,
+    "switchRailDisp1": 0.0,
+    "pointRailDisp1": 0.0
+  },
+  {
+    "time": 0.1,
+    "switchRailDisp1": 0.13,
+    "pointRailDisp1": 0.0
+  },
+  {
+    "time": 0.2,
+    "switchRailDisp1": 0.52,
+    "pointRailDisp1": 0.0
+  },
+  {
+    "time": 0.3,
+    "switchRailDisp1": 1.16,
+    "pointRailDisp1": 0.0
+  },
+  {
+    "time": 0.4,
+    "switchRailDisp1": 2.04,
+    "pointRailDisp1": 0.0
+  },
+  {
+    "time": 0.5,
+    "switchRailDisp1": 3.15,
+    "pointRailDisp1": 0.0
+  },
+  {
+    "time": 0.6,
+    "switchRailDisp1": 4.48,
+    "pointRailDisp1": 0.08
+  },
+  {
+    "time": 0.7,
+    "switchRailDisp1": 6.03,
+    "pointRailDisp1": 0.31
+  },
+  {
+    "time": 0.8,
+    "switchRailDisp1": 7.77,
+    "pointRailDisp1": 0.69
+  },
+  {
+    "time": 0.9,
+    "switchRailDisp1": 9.72,
+    "pointRailDisp1": 1.21
+  },
+  {
+    "time": 1.0,
+    "switchRailDisp1": 11.85,
+    "pointRailDisp1": 1.87
+  },
+  {
+    "time": 1.1,
+    "switchRailDisp1": 14.16,
+    "pointRailDisp1": 2.66
+  },
+  {
+    "time": 1.2,
+    "switchRailDisp1": 16.64,
+    "pointRailDisp1": 3.58
+  },
+  {
+    "time": 1.3,
+    "switchRailDisp1": 19.28,
+    "pointRailDisp1": 4.62
+  },
+  {
+    "time": 1.4,
+    "switchRailDisp1": 22.07,
+    "pointRailDisp1": 5.77
+  },
+  {
+    "time": 1.5,
+    "switchRailDisp1": 25.0,
+    "pointRailDisp1": 7.04
+  },
+  {
+    "time": 1.6,
+    "switchRailDisp1": 28.07,
+    "pointRailDisp1": 8.41
+  },
+  {
+    "time": 1.7,
+    "switchRailDisp1": 31.25,
+    "pointRailDisp1": 9.88
+  },
+  {
+    "time": 1.8,
+    "switchRailDisp1": 34.56,
+    "pointRailDisp1": 11.45
+  },
+  {
+    "time": 1.9,
+    "switchRailDisp1": 37.97,
+    "pointRailDisp1": 13.1
+  },
+  {
+    "time": 2.0,
+    "switchRailDisp1": 41.48,
+    "pointRailDisp1": 14.84
+  },
+  {
+    "time": 2.1,
+    "switchRailDisp1": 45.08,
+    "pointRailDisp1": 16.66
+  },
+  {
+    "time": 2.2,
+    "switchRailDisp1": 48.76,
+    "pointRailDisp1": 18.56
+  },
+  {
+    "time": 2.3,
+    "switchRailDisp1": 52.51,
+    "pointRailDisp1": 20.52
+  },
+  {
+    "time": 2.4,
+    "switchRailDisp1": 56.32,
+    "pointRailDisp1": 22.55
+  },
+  {
+    "time": 2.5,
+    "switchRailDisp1": 60.19,
+    "pointRailDisp1": 24.63
+  },
+  {
+    "time": 2.6,
+    "switchRailDisp1": 64.09,
+    "pointRailDisp1": 26.77
+  },
+  {
+    "time": 2.7,
+    "switchRailDisp1": 68.04,
+    "pointRailDisp1": 28.95
+  },
+  {
+    "time": 2.8,
+    "switchRailDisp1": 72.01,
+    "pointRailDisp1": 31.18
+  },
+  {
+    "time": 2.9,
+    "switchRailDisp1": 76.0,
+    "pointRailDisp1": 33.44
+  },
+  {
+    "time": 3.0,
+    "switchRailDisp1": 80.0,
+    "pointRailDisp1": 35.73
+  },
+  {
+    "time": 3.1,
+    "switchRailDisp1": 84.0,
+    "pointRailDisp1": 38.06
+  },
+  {
+    "time": 3.2,
+    "switchRailDisp1": 87.99,
+    "pointRailDisp1": 40.4
+  },
+  {
+    "time": 3.3,
+    "switchRailDisp1": 91.96,
+    "pointRailDisp1": 42.76
+  },
+  {
+    "time": 3.4,
+    "switchRailDisp1": 95.91,
+    "pointRailDisp1": 45.13
+  },
+  {
+    "time": 3.5,
+    "switchRailDisp1": 99.81,
+    "pointRailDisp1": 47.5
+  },
+  {
+    "time": 3.6,
+    "switchRailDisp1": 103.68,
+    "pointRailDisp1": 49.87
+  },
+  {
+    "time": 3.7,
+    "switchRailDisp1": 107.49,
+    "pointRailDisp1": 52.24
+  },
+  {
+    "time": 3.8,
+    "switchRailDisp1": 111.24,
+    "pointRailDisp1": 54.6
+  },
+  {
+    "time": 3.9,
+    "switchRailDisp1": 114.92,
+    "pointRailDisp1": 56.94
+  },
+  {
+    "time": 4.0,
+    "switchRailDisp1": 118.52,
+    "pointRailDisp1": 59.27
+  },
+  {
+    "time": 4.1,
+    "switchRailDisp1": 122.03,
+    "pointRailDisp1": 61.56
+  },
+  {
+    "time": 4.2,
+    "switchRailDisp1": 125.44,
+    "pointRailDisp1": 63.82
+  },
+  {
+    "time": 4.3,
+    "switchRailDisp1": 128.75,
+    "pointRailDisp1": 66.05
+  },
+  {
+    "time": 4.4,
+    "switchRailDisp1": 131.93,
+    "pointRailDisp1": 68.23
+  },
+  {
+    "time": 4.5,
+    "switchRailDisp1": 135.0,
+    "pointRailDisp1": 70.37
+  },
+  {
+    "time": 4.6,
+    "switchRailDisp1": 137.93,
+    "pointRailDisp1": 72.45
+  },
+  {
+    "time": 4.7,
+    "switchRailDisp1": 140.72,
+    "pointRailDisp1": 74.48
+  },
+  {
+    "time": 4.8,
+    "switchRailDisp1": 143.36,
+    "pointRailDisp1": 76.44
+  },
+  {
+    "time": 4.9,
+    "switchRailDisp1": 145.84,
+    "pointRailDisp1": 78.34
+  },
+  {
+    "time": 5.0,
+    "switchRailDisp1": 148.15,
+    "pointRailDisp1": 80.16
+  },
+  {
+    "time": 5.1,
+    "switchRailDisp1": 150.28,
+    "pointRailDisp1": 81.9
+  },
+  {
+    "time": 5.2,
+    "switchRailDisp1": 152.23,
+    "pointRailDisp1": 83.55
+  },
+  {
+    "time": 5.3,
+    "switchRailDisp1": 153.97,
+    "pointRailDisp1": 85.12
+  },
+  {
+    "time": 5.4,
+    "switchRailDisp1": 155.52,
+    "pointRailDisp1": 86.59
+  },
+  {
+    "time": 5.5,
+    "switchRailDisp1": 156.85,
+    "pointRailDisp1": 87.96
+  },
+  {
+    "time": 5.6,
+    "switchRailDisp1": 157.96,
+    "pointRailDisp1": 89.23
+  },
+  {
+    "time": 5.7,
+    "switchRailDisp1": 158.84,
+    "pointRailDisp1": 90.38
+  },
+  {
+    "time": 5.8,
+    "switchRailDisp1": 159.48,
+    "pointRailDisp1": 91.42
+  },
+  {
+    "time": 5.9,
+    "switchRailDisp1": 159.87,
+    "pointRailDisp1": 92.34
+  },
+  {
+    "time": 6.0,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 93.13
+  },
+  {
+    "time": 6.1,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 93.79
+  },
+  {
+    "time": 6.2,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 94.31
+  },
+  {
+    "time": 6.3,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 94.69
+  },
+  {
+    "time": 6.4,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 94.92
+  },
+  {
+    "time": 6.5,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 95.0
+  },
+  {
+    "time": 6.6,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 95.0
+  },
+  {
+    "time": 6.7,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 95.0
+  },
+  {
+    "time": 6.8,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 95.0
+  },
+  {
+    "time": 6.9,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 95.0
+  },
+  {
+    "time": 7.0,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 95.0
+  },
+  {
+    "time": 7.1,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 95.0
+  },
+  {
+    "time": 7.2,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 95.0
+  },
+  {
+    "time": 7.3,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 95.0
+  },
+  {
+    "time": 7.4,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 95.0
+  },
+  {
+    "time": 7.5,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 95.0
+  },
+  {
+    "time": 7.6,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 95.0
+  },
+  {
+    "time": 7.7,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 95.0
+  },
+  {
+    "time": 7.8,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 95.0
+  },
+  {
+    "time": 7.9,
+    "switchRailDisp1": 160.0,
+    "pointRailDisp1": 95.0
+  }
+]

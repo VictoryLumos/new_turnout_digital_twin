@@ -1,0 +1,97 @@
+# -*- coding: utf-8 -*-
+"""
+道岔数字孪生 —— 仿真数据转换脚本（B：数据管道线）
+
+作用：
+    把 A 的 UM / MATLAB 导出的仿真 CSV 转成接口契约格式的 JSON
+    （字段 time / switchRailDisp1 / pointRailDisp1，0.1s 步长），
+    转完自动校验：字段齐全、步长均匀、无缺行。转好的文件可直接
+    替换 data.json 联调，或用 db/02_数据导入脚本.py 入库。
+
+用法：
+    python 仿真数据转换脚本.py --file um_data.csv             # 输出 um_data.json
+    python 仿真数据转换脚本.py --file um_data.csv --out 新数据.json
+    python 仿真数据转换脚本.py --file um_data.csv --step 0.01  # UM 步长不是0.1s时指定
+
+A 的 CSV 要求：
+    - 第一行为表头；含一个时间列 + 两个位移列（列名见下方 CONFIG）
+    - 时间单位秒，位移单位毫米
+    - 时间步长均匀（缺行/乱序会报错，不会静默出错数据）
+
+A 首次交付数据后，若列名与 CONFIG 不一致，只改 CONFIG 三个名字即可，其余不动。
+"""
+import argparse
+import csv
+import json
+import os
+import sys
+
+# ===== CONFIG：列名映射（按 A 实际导出格式调整，改完群通知）=====
+TIME_COL = "time"               # 时间列（秒）
+SWITCH_COL = "switchRailDisp1"  # 尖轨位移列（mm）
+POINT_COL = "pointRailDisp1"    # 心轨位移列（mm）
+
+STEP = 0.1        # 契约步长（秒），可用 --step 临时覆盖
+DECIMALS = 2      # 位移保留小数位
+
+
+def convert(csv_path, out_path, step):
+    with open(csv_path, encoding="utf-8-sig", newline="") as f:  # utf-8-sig 兼容 Excel 导出的 BOM
+        reader = csv.DictReader(f)
+        header = reader.fieldnames or []
+        for col in (TIME_COL, SWITCH_COL, POINT_COL):
+            if col not in header:
+                sys.exit(f"[失败] CSV 里找不到列 '{col}'。实际表头是 {header}。\n"
+                         f"        请把脚本顶部 CONFIG 的三个列名改成 A 实际导出的名字。")
+        rows = [{TIME_COL: r[TIME_COL], SWITCH_COL: r[SWITCH_COL], POINT_COL: r[POINT_COL]}
+                for r in reader]
+
+    if not rows:
+        sys.exit("[失败] CSV 没有数据行")
+
+    # 解析 + 契约校验
+    out = []
+    prev_t = None
+    for i, r in enumerate(rows):
+        try:
+            t = round(float(r[TIME_COL]), 3)
+            sw = round(float(r[SWITCH_COL]), DECIMALS)
+            pr = round(float(r[POINT_COL]), DECIMALS)
+        except ValueError as e:
+            sys.exit(f"[失败] 第 {i + 2} 行有非数值内容：{e}")
+        if prev_t is not None:
+            delta = round(t - prev_t, 6)
+            if abs(delta - step) > 1e-6:
+                sys.exit(f"[失败] 第 {i + 2} 行步长 {delta}s ≠ {step}s（前一行 t={prev_t}）。"
+                         f"数据缺行或步长不匀，请 A 重新导出，或用 --step 指定实际步长。")
+        prev_t = t
+        out.append({"time": t, "switchRailDisp1": sw, "pointRailDisp1": pr})
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, indent=2)
+
+    sw_max = max(r["switchRailDisp1"] for r in out)
+    pr_max = max(r["pointRailDisp1"] for r in out)
+    print(f"[成功] {len(out)} 条已转换 -> {os.path.basename(out_path)}")
+    print(f"       时间 {out[0]['time']}~{out[-1]['time']}s，步长 {step}s")
+    print(f"       尖轨最大 {sw_max} mm（阈值150，{'会超限' if sw_max > 150 else '不超限'}）；"
+          f"心轨最大 {pr_max} mm（阈值100，{'会超限' if pr_max > 100 else '不超限'}）")
+    print(f"       首条 {json.dumps(out[0], ensure_ascii=False)}")
+    print("[提醒] 替换 data/data.json 前先群通知；入库用 db/02_数据导入脚本.py --file 本文件")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="UM/MATLAB 仿真 CSV → 契约 JSON")
+    parser.add_argument("--file", required=True, help="输入 CSV 路径")
+    parser.add_argument("--out", default=None, help="输出 JSON 路径（默认与 CSV 同名）")
+    parser.add_argument("--step", type=float, default=STEP, help=f"时间步长（默认 {STEP}s）")
+    args = parser.parse_args()
+
+    if not os.path.exists(args.file):
+        sys.exit(f"[失败] 找不到文件 {args.file}")
+    out_path = args.out or os.path.splitext(args.file)[0] + ".json"
+    convert(args.file, out_path, args.step)
+
+
+if __name__ == "__main__":
+    main()
