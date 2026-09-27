@@ -123,6 +123,18 @@ try:
     cur.execute("SELECT count(*) FROM work_order "
                 "WHERE remark LIKE '自动生成%'")
     auto_wos = cur.fetchone()[0]
+    # 数据库 v2 对象（05_数据库升级v2.sql；旧库缺表时记 0，不中断自检）
+    nviews = ntrg = nevts = 0
+    try:
+        cur.execute("SELECT count(*) FROM pg_views WHERE schemaname='public' "
+                    "AND viewname LIKE 'v_%'")
+        nviews = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM pg_trigger WHERE tgname='trg_timeseries_alarm'")
+        ntrg = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM alarm_event")
+        nevts = cur.fetchone()[0]
+    except Exception:
+        nviews = ntrg = nevts = 0
     conn.close()
     check("数据库 turnout_twin 连接", True)
     # 时序≥8000=四工况已入库；工单≥20=种子+可能的联动工单；实时值=20测点
@@ -136,6 +148,11 @@ try:
     check("告警→工单联动证据", auto_wos > 0,
           f"{auto_wos} 张自动生成工单（服务API回放产生）" if auto_wos
           else "尚无（先跑一次 服务API演示 的卡阻回放）")
+    # ---- 数据库 v2 升级对象（05_数据库升级v2.sql）----
+    check("数据库v2对象（4视图+告警触发器+审计表）", nviews >= 4 and ntrg >= 1,
+          f"视图{nviews}个，触发器{'在' if ntrg else '缺'}，告警事件留痕 {nevts} 条"
+          if nviews >= 4 and ntrg >= 1
+          else "未升级——执行 db/05_数据库升级v2.sql（幂等可重复），再跑 06_数据库体检.py")
 except Exception as e:
     hint = ""
     text = str(e).lower()

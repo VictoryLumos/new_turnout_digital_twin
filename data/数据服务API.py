@@ -442,9 +442,19 @@ def api_alarms():
     rows = q("SELECT r.point_code, p.field_name, r.value, p.alarm_threshold, p.unit "
              "FROM realtime_value r JOIN measurement_point p USING(point_code) "
              "WHERE r.alarm = TRUE ORDER BY r.point_code")
-    return {"count": len(rows), "告警": [
+    out = {"count": len(rows), "告警": [
         {"测点": p, "字段": f, "当前值": float(v), "阈值": th, "单位": u}
         for p, f, v, th, u in rows]}
+    # 数据库层告警审计（05_数据库升级v2 的触发器留痕；旧库未升级时自动省略）
+    try:
+        ev = q("SELECT point_code, to_char(ts,'MM-DD HH24:MI:SS'), value, threshold, source "
+               "FROM alarm_event ORDER BY ts DESC, event_id DESC LIMIT 10")
+        out["告警事件审计（数据库触发器留痕，最近10条）"] = [
+            {"测点": p, "时刻": t, "值": float(v), "阈值": th, "来源": s}
+            for p, t, v, th, s in ev]
+    except psycopg2.Error:
+        out["告警事件审计"] = "未启用（执行 db/05_数据库升级v2.sql 开启数据库层审计）"
+    return out
 
 
 @app.get("/api/health")
@@ -514,11 +524,20 @@ def api_stats():
               ("component", "measurement_point", "timeseries_data",
                "work_order", "realtime_value")}
     latency = round((time.perf_counter() - t0) * 1000, 1)
+    # v2 数据库对象（体检脚本 06 的口径）
+    try:
+        views = q("SELECT count(*) FROM pg_views WHERE schemaname='public' "
+                  "AND viewname LIKE 'v_%%'")[0][0]
+        trg = q("SELECT count(*) FROM pg_trigger WHERE tgname='trg_timeseries_alarm'")[0][0]
+        events = q("SELECT count(*) FROM alarm_event")[0][0]
+        db_extra = {"分析视图": views, "告警触发器": trg, "告警事件留痕": events}
+    except psycopg2.Error:
+        db_extra = "未升级（执行 db/05_数据库升级v2.sql 启用视图/触发器/审计）"
     uptime = datetime.now() - START_AT
     with _play["lock"]:
         win_rows = len(_play["window"])
     return {
-        "数据库": {"表行数": counts, "本轮5表查询延迟ms": latency},
+        "数据库": {"表行数": counts, "本轮5表查询延迟ms": latency, "v2对象": db_extra},
         "回放": {"当前工况": _play["condition"] or "无", "仿真时刻": _play["t"],
                  "识别窗口行数": win_rows},
         "服务": {"版本": "2.1", "启动时间": START_AT.strftime("%Y-%m-%d %H:%M:%S"),
