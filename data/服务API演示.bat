@@ -1,6 +1,9 @@
 @echo off
 title 道岔数字孪生 - 数据服务API 一键演示
 cd /d %~dp0
+rem Python 探测：PATH 里没有就用本机安装路径（不依赖环境变量配置）
+set "PY=python"
+where python >nul 2>nul || if exist "D:\PY\python.exe" set "PY=D:\PY\python.exe"
 echo ================================================
 echo   道岔数字孪生 - 数据服务API 一键演示
 echo ================================================
@@ -14,7 +17,7 @@ echo.
 echo [1/2] 启动数据服务API（新窗口，演示期间别关它）...
 echo       绑定 0.0.0.0：局域网内 C 可直接访问 http://本机IP:8000
 echo       （首次运行 Windows 防火墙弹窗请点"允许访问"）
-start "data-api-service" cmd /k python -m uvicorn 数据服务API:app --host 0.0.0.0 --port 8000
+start "data-api-service" cmd /k %PY% -m uvicorn 数据服务API:app --host 0.0.0.0 --port 8000
 echo [2/2] 打开可视化状态板...
 timeout /t 3 >nul
 start "" "http://localhost:8000/"

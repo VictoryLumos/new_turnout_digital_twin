@@ -1,12 +1,15 @@
 @echo off
 title 道岔数字孪生 - 数据库实时表格 一键演示
 cd /d %~dp0
+rem Python 探测：PATH 里没有就用本机安装路径
+set "PY=python"
+where python >nul 2>nul || if exist "D:\PY\python.exe" set "PY=D:\PY\python.exe"
 echo ================================================
 echo   道岔数字孪生 - 数据库实时表格 一键演示
 echo ================================================
 echo.
 echo [1/2] 启动实时数据写入（新窗口，演示期间别关它）...
-start "rt-writer" cmd /k python 实时数据入库.py
+start "rt-writer" cmd /k %PY% 实时数据入库.py
 echo [2/2] 打开实时表格（每秒自动刷新）...
 timeout /t 2 >nul
 set PGPASSWORD=postgres
