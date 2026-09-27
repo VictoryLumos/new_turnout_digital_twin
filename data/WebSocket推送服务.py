@@ -9,8 +9,11 @@
 
 用法：
     pip install websockets
-    python WebSocket推送服务.py              # 默认端口 8765
-    python WebSocket推送服务.py --port 9000  # 换端口
+    python WebSocket推送服务.py                       # 默认推送 data.json（基础契约3字段）
+    python WebSocket推送服务.py --port 9000           # 换端口
+    python WebSocket推送服务.py --dataset 卡阻         # 推送扩展数据集v2 四工况之一
+                                                      #（time+20测点字段，契约v2.0可选字段，
+                                                      #  C 页面按需取字段、忽略多余字段即可）
 
 C 端连接地址：
     C 和你同一台电脑：ws://localhost:8765
@@ -31,6 +34,8 @@ import os
 import sys
 
 DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.json")
+DS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "扩展数据集v2")
+CONDITIONS = ["正常转换", "卡阻", "密贴不良", "锁闭失败"]
 STEP_SECONDS = 0.1  # 《统一标准》数据契约：时间步长 0.1 秒
 
 try:
@@ -50,10 +55,28 @@ def load_data():
     """读 data.json 并自检（条数 / 步长 / 时间范围），返回数据列表。"""
     with open(DATA_FILE, encoding="utf-8") as f:
         rows = json.load(f)
-    assert rows, "data.json 是空的"
+    return check_rows(rows, str(DATA_FILE))
+
+
+def load_dataset(condition):
+    """读扩展数据集v2 指定工况并自检（契约 v2.0：time + 20 测点字段）。"""
+    path = os.path.join(DS_DIR, f"工况_{condition}.json")
+    if not os.path.exists(path):
+        sys.exit(f"[失败] 找不到 {path}，可用工况：{CONDITIONS}")
+    with open(path, encoding="utf-8") as f:
+        rows = json.load(f)
+    rows = check_rows(rows, path)
+    print(f"[契约v2] 推送全字段数据（{len(rows[0])} 字段），"
+          f"C 页面按需取字段、忽略多余字段即可")
+    return rows
+
+
+def check_rows(rows, src):
+    """数据自检：非空 + 步长 0.1s 均匀，坏了报错不静默。"""
+    assert rows, f"{src} 是空的"
     steps = {round(rows[i + 1]["time"] - rows[i]["time"], 6) for i in range(len(rows) - 1)}
     assert steps == {STEP_SECONDS}, f"步长异常 {steps}，契约要求 0.1 秒"
-    print(f"[自检] data.json 读取成功：{len(rows)} 条，"
+    print(f"[自检] {os.path.basename(src)} 读取成功：{len(rows)} 条 × {len(rows[0])} 字段，"
           f"time {rows[0]['time']}~{rows[-1]['time']}s，步长 {STEP_SECONDS}s")
     return rows
 
@@ -86,10 +109,13 @@ async def main(port):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="按 0.1s 步长循环推送 data.json")
+    parser = argparse.ArgumentParser(description="按 0.1s 步长循环推送契约数据")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--dataset", default=None, metavar="工况",
+                        help=f"推送扩展数据集v2 指定工况（{'/'.join(CONDITIONS)}），"
+                             f"默认推送 data.json 基础契约数据")
     args = parser.parse_args()
-    ROWS.extend(load_data())
+    ROWS.extend(load_dataset(args.dataset) if args.dataset else load_data())
     try:
         asyncio.run(main(args.port))
     except KeyboardInterrupt:

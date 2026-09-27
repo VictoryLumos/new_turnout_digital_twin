@@ -80,7 +80,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 START_AT = datetime.now()
 _play = {"thread": None, "stop": threading.Event(), "condition": None, "t": None,
-         "window": deque(maxlen=100), "lock": threading.Lock()}
+         "window": deque(maxlen=100), "lock": threading.Lock(),
+         "health_hist": deque(maxlen=600)}   # (仿真时刻, 评分)，最近60s，状态板画迷你趋势
 
 _pool = None
 _pool_lock = threading.Lock()
@@ -321,6 +322,7 @@ def playback(condition):
                 _play["t"] = r["time"]
                 with _play["lock"]:
                     _play["window"].append(r)
+                    _play["health_hist"].append((r["time"], score))
                 for it in issues:
                     ensure_work_order(it["关联测点"], it["规则"], issued)
             except Exception:
@@ -353,7 +355,9 @@ button{{background:#2563eb;border:0;color:#fff;border-radius:6px;padding:3px 10p
 <span id="grade" style="color:{color}">{grade}</span>
 <div id="issues" style="font-size:13px;color:#94a3b8;margin-top:6px">
 {'；'.join(i['规则'] for i in issues) or '无扣分项'}</div>
-<div id="cond" style="font-size:13px;color:#64748b;margin-top:4px">当前回放：无</div></div>
+<div id="cond" style="font-size:13px;color:#64748b;margin-top:4px">当前回放：无</div>
+<canvas id="hspark" style="width:100%;height:56px;display:block;margin-top:8px"></canvas>
+<div style="font-size:11px;color:#475569">本轮回放健康度曲线（0~100，虚线=60分故障线）— 注入故障看跳水，维修闭环看回升</div></div>
 <div class="c"><b>行为模型回放</b>（点击注入工况，观察健康度与工单联动）：<br><br>{conds}
 <a href="javascript:fetch('/api/stop').then(r=>r.json()).then(loadAll)">停止</a></div>
 <div class="c"><b>工况自动识别</b>（8维统计特征 → 四工况最近邻 · 数据驱动判工况，v2.1）
@@ -399,8 +403,25 @@ fl.textContent=d.特征依据+(d.窗口&&!d.窗口.窗口已满?'（窗口未满
 '；次接近：'+d.次接近;}}
 else{{el.textContent='--';el.style.color='#64748b';fl.textContent=d.说明||'无回放数据'}}}})
 .catch(()=>{{}})}}
-function loadAll(){{load();loadWos();loadId()}}
-setInterval(load,2000);setInterval(loadWos,5000);setInterval(loadId,1000);loadAll();
+function loadH(){{
+fetch('/api/health/trend').then(r=>r.json()).then(d=>{{
+const cv=document.getElementById('hspark');const dpr=devicePixelRatio||1;
+cv.width=cv.clientWidth*dpr;cv.height=cv.clientHeight*dpr;
+const ctx=cv.getContext('2d'),W=cv.width,H=cv.height;ctx.clearRect(0,0,W,H);
+if(!d.count)return;
+const pts=d.数据,n=pts.length;
+const X=i=>2+(W-4)*i/Math.max(n-1,1), Y=v=>4+(H-8)*(1-v/100);
+ctx.setLineDash([3*dpr,3*dpr]);ctx.strokeStyle='#ef4444';ctx.beginPath();
+ctx.moveTo(2,Y(60));ctx.lineTo(W-2,Y(60));ctx.stroke();ctx.setLineDash([]);
+ctx.beginPath();ctx.strokeStyle='#38bdf8';ctx.lineWidth=1.5*dpr;
+for(let i=0;i<n;i++){{i?ctx.lineTo(X(i),Y(pts[i].健康度评分)):ctx.moveTo(X(i),Y(pts[i].健康度评分))}}
+ctx.stroke();
+const last=pts[n-1].健康度评分;
+ctx.beginPath();ctx.arc(X(n-1),Y(last),3*dpr,0,7);
+ctx.fillStyle=last>=90?'#22c55e':last>=75?'#eab308':last>=60?'#f97316':'#ef4444';
+ctx.fill();}}).catch(()=>{{}})}}
+function loadAll(){{load();loadWos();loadId();loadH()}}
+setInterval(load,2000);setInterval(loadWos,5000);setInterval(loadId,1000);setInterval(loadH,2000);loadAll();
 </script></body></html>""")
 
 
@@ -433,6 +454,15 @@ def api_health():
             "当前回放": _play["condition"] or "无",
             "仿真时刻": _play["t"],
             "评估时间": datetime.now().strftime("%H:%M:%S")}
+
+
+@app.get("/api/health/trend")
+def api_health_trend():
+    """健康度历史（本轮回放以来的评分曲线，状态板迷你图数据源）"""
+    with _play["lock"]:
+        hist = list(_play["health_hist"])
+    return {"count": len(hist), "当前回放": _play["condition"] or "无",
+            "数据": [{"仿真时刻": t, "健康度评分": round(s, 1)} for t, s in hist]}
 
 
 @app.get("/api/workorders")
@@ -545,6 +575,7 @@ def api_repair(work_order_id: str):
         _play["t"] = None
         with _play["lock"]:
             _play["window"].clear()
+            _play["health_hist"].clear()
         _play["thread"] = threading.Thread(target=playback, args=("正常转换",), daemon=True)
         _play["thread"].start()
     return {"msg": f"{work_order_id} 已维修闭环；系统自动重演正常转换复测，健康度将回升"}
@@ -566,6 +597,8 @@ def trend():
     opts = "".join(
         f'<option value="{p}"{" selected" if p == "T01-SR-01-DISP" else ""}>{p} · {f} ({u})</option>'
         for p, f, u, t in ordered)
+    opts2 = "".join(
+        f'<option value="{p}">{p} · {f} ({u})</option>' for p, f, u, t in ordered)
     th = {p: t for p, f, u, t in points if t is not None}
     th_json = json.dumps(th, ensure_ascii=False)
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -578,55 +611,101 @@ canvas{{width:100%;height:340px;display:block}}
 #cur{{font-size:15px;color:#fbbf24;font-weight:bold}}</style></head><body>
 <h1 style="font-size:19px">道岔数字孪生 · 历史趋势回放（20测点 · 四工况）</h1>
 <div class="c">测点：<select id="pt" onchange="load()">{opts}</select>
+叠加：<select id="pt2" onchange="load()"><option value="">（不叠加）</option>{opts2}</select>（粉色副轴）
 时段：<select id="src" onchange="load()"><option value="all">全部（四工况）</option><option value="仿真-正常转换">正常转换</option><option value="仿真-卡阻">卡阻</option><option value="仿真-密贴不良">密贴不良</option><option value="仿真-锁闭失败">锁闭失败</option><option value="fake">基础版假数据</option></select>
 <button onclick="load()">刷新</button>
+<button onclick="exportCSV()">⬇ 导出CSV</button>
 <button id="pb" onclick="togglePlay()">▶ 回放</button>
 <select id="spd"><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option></select>
 <span id="cur">--</span>
 <div id="info">加载中…</div></div>
 <div class="c"><canvas id="cv"></canvas></div>
-<div style="font-size:12px;color:#475569">回放=按时间轴逐点重演历史（黄色光标处为当前时刻）；红色虚线=告警阈值；数据来源含 fake 与 仿真-四工况，每工况间隔1小时。</div>
+<div style="font-size:12px;color:#475569">回放=按时间轴逐点重演历史（黄色光标处为当前时刻）；蓝色=主测点（左轴刻度）、粉色=叠加测点（独立量程）；红/粉虚线=各自告警阈值；背景色带=数据来源分段（四工况各一段，段名标在上方）；⬇ 导出当前数据为 CSV（带 BOM，Excel 直接打开）。</div>
 <script>const TH={th_json};
 const cv=document.getElementById('cv');
-let ROWS=[],TMIN=[],T0=0,SPAN=1,LO=0,HI=1,idx=0,timer=null;
+let ROWS=[],ROWS2=[],TMIN=[],TMIN2=[],SEGS=[],T0=0,SPAN=1,LO=0,HI=1,LO2=0,HI2=1,idx=0,timer=null;
+const MINUTES=x=>{{const a=x.时刻.split(':');return +a[0]*60+ +a[1]+ +a[2]/60}};
 function fit(){{cv.width=cv.clientWidth*(devicePixelRatio||1);cv.height=cv.clientHeight*(devicePixelRatio||1)}}
 addEventListener('resize',()=>{{fit();draw()}});
 async function load(){{
 fit();
-const p=document.getElementById('pt').value;
+const p=document.getElementById('pt').value, p2=document.getElementById('pt2').value;
+const f=document.getElementById('src').value;
 const d=await(await fetch('/api/history/'+p+'?limit=2000')).json();
 ROWS=d.数据||[];
-const f=document.getElementById('src').value;
 if(f!=="all")ROWS=ROWS.filter(x=>x.来源===f);
+ROWS2=[];
+if(p2){{const d2=await(await fetch('/api/history/'+p2+'?limit=2000')).json();
+ROWS2=d2.数据||[];if(f!=="all")ROWS2=ROWS2.filter(x=>x.来源===f);}}
 if(!ROWS.length){{document.getElementById('info').textContent=p+' 在该时段暂无数据';return}}
-TMIN=ROWS.map(x=>{{const a=x.时刻.split(':');return +a[0]*60+ +a[1]+ +a[2]/60}});
+TMIN=ROWS.map(MINUTES);TMIN2=ROWS2.map(MINUTES);
+SEGS=[];let s=0;
+for(let i=1;i<=ROWS.length;i++){{if(i===ROWS.length||ROWS[i].来源!==ROWS[s].来源){{
+SEGS.push({{a:TMIN[s],b:TMIN[i-1],src:ROWS[s].来源}});s=i;}}}}
 T0=TMIN[0];SPAN=Math.max(TMIN[TMIN.length-1]-T0,0.1);
 const vals=ROWS.map(x=>x.值);let lo=Math.min(...vals),hi=Math.max(...vals);
 const thv=TH[p];if(thv!==undefined){{lo=Math.min(lo,thv);hi=Math.max(hi,thv)}}
 const pad=(hi-lo)*0.15||5;LO=lo-pad;HI=hi+pad;
+if(ROWS2.length){{const v2=ROWS2.map(x=>x.值);let l2=Math.min(...v2),h2=Math.max(...v2);
+const t2=TH[p2];if(t2!==undefined){{l2=Math.min(l2,t2);h2=Math.max(h2,t2)}}
+const pd2=(h2-l2)*0.15||5;LO2=l2-pd2;HI2=h2+pd2;}}
 stopPlay();idx=ROWS.length-1;draw();
-document.getElementById('info').textContent=p+' · 共'+ROWS.length+'点 · '+ROWS[0].时刻+' ~ '+ROWS[ROWS.length-1].时刻+'（四工况分四段）';
+document.getElementById('info').textContent=p+(p2?' ＋ '+p2.split('-').pop():'')+
+' · 共'+ROWS.length+'点 · '+ROWS[0].时刻+' ~ '+ROWS[ROWS.length-1].时刻+' · '+SEGS.length+' 个数据段（背景色区分）';
 }}
 function draw(){{
 const ctx=cv.getContext('2d'),W=cv.width,H=cv.height,dpr=devicePixelRatio||1;
 ctx.clearRect(0,0,W,H);
 if(!ROWS.length)return;
-const PL=52,PR=12,PT=12,PB=24,pw=W-PL-PR,ph=H-PT-PB;
-const X=m=>PL+pw*(m-T0)/SPAN, Y=v=>PT+ph*(1-(v-LO)/(HI-LO));
+const PL=52,PR=12,PT=24,PB=24,pw=W-PL-PR,ph=H-PT-PB;
+const X=m=>PL+pw*(m-T0)/SPAN, Y=v=>PT+ph*(1-(v-LO)/(HI-LO)), Y2=v=>PT+ph*(1-(v-LO2)/(HI2-LO2||1));
+const BAND=['rgba(56,189,248,0.07)','rgba(251,191,36,0.07)','rgba(52,211,153,0.07)','rgba(244,114,182,0.07)'];
+SEGS.forEach((sg,i)=>{{const x0=Math.max(PL,X(sg.a)),x1=Math.min(W-PR,X(sg.b));
+ctx.fillStyle=BAND[i%4];ctx.fillRect(x0,PT,x1-x0,ph);
+if(x1-x0>30*dpr){{ctx.fillStyle='#64748b';ctx.font=(10*dpr)+'px sans-serif';ctx.textAlign='center';
+ctx.fillText(sg.src.replace('仿真-',''),(x0+x1)/2,PT-9*dpr);}}}});
 ctx.strokeStyle='#1e2f4d';ctx.fillStyle='#64748b';ctx.font=(10*dpr)+'px sans-serif';
 for(let i=0;i<=4;i++){{const v=LO+(HI-LO)*i/4;ctx.beginPath();ctx.moveTo(PL,Y(v));ctx.lineTo(W-PR,Y(v));ctx.stroke();ctx.textAlign='right';ctx.fillText(v.toFixed(1),PL-6,Y(v)+3*dpr)}}
 const p=document.getElementById('pt').value,thv=TH[p];
-if(thv!==undefined){{ctx.setLineDash([6,4]);ctx.strokeStyle='#ef4444';ctx.beginPath();ctx.moveTo(PL,Y(thv));ctx.lineTo(W-PR,Y(thv));ctx.stroke();ctx.setLineDash([])}}
+const p2=document.getElementById('pt2').value,thv2=TH[p2];
+if(thv!==undefined){{ctx.setLineDash([6,4]);ctx.strokeStyle='#ef4444';ctx.beginPath();ctx.moveTo(PL,Y(thv));ctx.lineTo(W-PR,Y(thv));ctx.stroke();ctx.setLineDash([]);
+ctx.textAlign='left';ctx.fillStyle='#ef4444';ctx.fillText('主阈值 '+thv,PL+4*dpr,Y(thv)-4*dpr);}}
+if(ROWS2.length&&thv2!==undefined){{ctx.setLineDash([6,4]);ctx.strokeStyle='#f472b6';ctx.beginPath();ctx.moveTo(PL,Y2(thv2));ctx.lineTo(W-PR,Y2(thv2));ctx.stroke();ctx.setLineDash([]);
+ctx.textAlign='right';ctx.fillStyle='#f472b6';ctx.fillText('副阈值 '+thv2,W-PR-4*dpr,Y2(thv2)-4*dpr);}}
 ctx.beginPath();ctx.strokeStyle='#38bdf8';ctx.lineWidth=1.6*dpr;
 for(let i=0;i<=idx&&i<ROWS.length;i++){{const gap=i>0&&TMIN[i]-TMIN[i-1]>2;
 i?(gap?ctx.moveTo(X(TMIN[i]),Y(ROWS[i].值)):ctx.lineTo(X(TMIN[i]),Y(ROWS[i].值))):ctx.moveTo(X(TMIN[i]),Y(ROWS[i].值))}}
 ctx.stroke();
+if(ROWS2.length){{let k2=-1;const tCur=idx<ROWS.length?TMIN[idx]:TMIN[ROWS.length-1];
+ctx.beginPath();ctx.strokeStyle='#f472b6';ctx.lineWidth=1.4*dpr;
+for(let i=0;i<ROWS2.length;i++){{
+if(TMIN2[i]>tCur)break;
+const gap=i>0&&TMIN2[i]-TMIN2[i-1]>2;
+i?(gap?ctx.moveTo(X(TMIN2[i]),Y2(ROWS2[i].值)):ctx.lineTo(X(TMIN2[i]),Y2(ROWS2[i].值))):ctx.moveTo(X(TMIN2[i]),Y2(ROWS2[i].值));
+k2=i;}}
+ctx.stroke();
+if(k2>=0){{ctx.beginPath();ctx.arc(X(TMIN2[k2]),Y2(ROWS2[k2].值),3*dpr,0,7);
+ctx.fillStyle='#f472b6';ctx.fill();ctx.strokeStyle='#0b1220';ctx.lineWidth=1;ctx.stroke();}}
+window._k2=k2;}}
 if(ROWS[idx]){{const cx=X(TMIN[idx]),cy=Y(ROWS[idx].值);
 ctx.beginPath();ctx.arc(cx,cy,4*dpr,0,7);ctx.fillStyle='#fbbf24';ctx.fill();
 ctx.strokeStyle='#0b1220';ctx.lineWidth=1;ctx.stroke();
-document.getElementById('cur').textContent='当前值 '+ROWS[idx].值+'（'+ROWS[idx].时刻+'）';}}
+let label2='';
+if(ROWS2.length&&window._k2>=0){{const o=document.getElementById('pt2').selectedOptions[0];
+label2=' · '+(o&&o.text.split(' · ')[1]||'叠加')+' '+ROWS2[window._k2].值;}}
+document.getElementById('cur').textContent='当前值 '+ROWS[idx].值+'（'+ROWS[idx].时刻+'）'+label2;}}
 ctx.textAlign='center';ctx.fillStyle='#475569';
 [0,.5,1].forEach(f=>{{const m=T0+SPAN*f;ctx.fillText(((m/60)|0)+':'+String(Math.round(m%60)).padStart(2,'0'),X(m),H-8)}});
+}}
+function exportCSV(){{
+if(!ROWS.length)return;
+const p=document.getElementById('pt').value,p2=document.getElementById('pt2').value;
+const m2=new Map();if(ROWS2.length)ROWS2.forEach(x=>m2.set(x.时刻,x.值));
+let csv='\\ufeff仿真时刻,来源,'+p+(p2?','+p2:'')+'\\n';
+ROWS.forEach(r=>{{csv+=r.时刻+','+r.来源+','+r.值+(p2?','+(m2.has(r.时刻)?m2.get(r.时刻):''):'')+'\\n'}});
+const blob=new Blob([csv],{{type:'text/csv;charset=utf-8'}});
+const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+a.download=p+(p2?'_vs_'+p2:'')+'.csv';a.click();URL.revokeObjectURL(a.href);
 }}
 function togglePlay(){{
 if(timer){{stopPlay();return}}
@@ -656,6 +735,7 @@ def api_play(condition: str):
     _play["t"] = None
     with _play["lock"]:
         _play["window"].clear()   # 识别窗口重置：新一轮回放从头积累
+        _play["health_hist"].clear()
     _play["thread"] = threading.Thread(target=playback, args=(condition,), daemon=True)
     _play["thread"].start()
     return {"msg": f"开始回放「{condition}」，实时值表每0.1s刷新，"

@@ -1,12 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-道岔数字孪生 —— 仿真数据转换脚本（B：数据管道线）
+道岔数字孪生 —— 仿真数据转换脚本（B：数据管道线，v2 对齐契约 v2.0）
 
 作用：
-    把 A 的 UM / MATLAB 导出的仿真 CSV 转成接口契约格式的 JSON
-    （字段 time / switchRailDisp1 / pointRailDisp1，0.1s 步长），
-    转完自动校验：字段齐全、步长均匀、无缺行。转好的文件可直接
-    替换 data.json 联调，或用 db/02_数据导入脚本.py 入库。
+    把 A 的 UM / MATLAB 导出的仿真 CSV 转成接口契约格式的 JSON，
+    转完自动校验：必选字段齐全、步长均匀、无缺行、无非数值。
+    转好的文件可直接替换 data.json 联调，或用 db/02_数据导入脚本.py 入库。
+
+契约 v2.0 字段支持：
+    - 必选 3 字段：time / switchRailDisp1 / pointRailDisp1（v1.0 冻结）
+    - 可选 17 字段：电流/功率/锁闭/密贴/三牵引点位移/力/振动/磨耗/轮轨力等
+      （见下方 KNOWN_OPTIONAL）；CSV 里有哪列就带哪列，没有就跳过
+    - 未知列名：忽略并列出（不静默丢弃，方便发现 A 的列名拼写差异）
 
 用法：
     python 仿真数据转换脚本.py --file um_data.csv             # 输出 um_data.json
@@ -14,8 +19,8 @@
     python 仿真数据转换脚本.py --file um_data.csv --step 0.01  # UM 步长不是0.1s时指定
 
 A 的 CSV 要求：
-    - 第一行为表头；含一个时间列 + 两个位移列（列名见下方 CONFIG）
-    - 时间单位秒，位移单位毫米
+    - 第一行为表头；必含一个时间列 + 两个位移列（列名见下方 CONFIG）
+    - 时间单位秒，位移单位毫米；可选列名与契约 v2.0 字段一致
     - 时间步长均匀（缺行/乱序会报错，不会静默出错数据）
 
 A 首次交付数据后，若列名与 CONFIG 不一致，只改 CONFIG 三个名字即可，其余不动。
@@ -31,8 +36,20 @@ TIME_COL = "time"               # 时间列（秒）
 SWITCH_COL = "switchRailDisp1"  # 尖轨位移列（mm）
 POINT_COL = "pointRailDisp1"    # 心轨位移列（mm）
 
+# ===== 契约 v2.0 可选字段（与测点编码一一对应，出现即转换）=====
+KNOWN_OPTIONAL = [
+    "switchRailDisp2", "switchRailDisp3",
+    "switchRailForce1", "switchRailForce2", "switchRailForce3",
+    "pointRailDisp2", "pointRailForce1", "pointRailForce2",
+    "switchMachineCurrent", "switchMachinePower",
+    "lockStatus", "closeStatus",
+    "frogVibration", "frogWear",
+    "wheelRailForceLateral", "wheelRailForceVertical",
+    "guardRailDisp", "railTemperature",
+]
+
 STEP = 0.1        # 契约步长（秒），可用 --step 临时覆盖
-DECIMALS = 2      # 位移保留小数位
+DECIMALS = 2      # 数值保留小数位
 
 
 def convert(csv_path, out_path, step):
@@ -41,10 +58,12 @@ def convert(csv_path, out_path, step):
         header = reader.fieldnames or []
         for col in (TIME_COL, SWITCH_COL, POINT_COL):
             if col not in header:
-                sys.exit(f"[失败] CSV 里找不到列 '{col}'。实际表头是 {header}。\n"
+                sys.exit(f"[失败] CSV 里找不到必选列 '{col}'。实际表头是 {header}。\n"
                          f"        请把脚本顶部 CONFIG 的三个列名改成 A 实际导出的名字。")
-        rows = [{TIME_COL: r[TIME_COL], SWITCH_COL: r[SWITCH_COL], POINT_COL: r[POINT_COL]}
-                for r in reader]
+        opt_cols = [c for c in KNOWN_OPTIONAL if c in header]
+        unknown = [c for c in header
+                   if c not in opt_cols + [TIME_COL, SWITCH_COL, POINT_COL]]
+        rows = list(reader)
 
     if not rows:
         sys.exit("[失败] CSV 没有数据行")
@@ -55,8 +74,11 @@ def convert(csv_path, out_path, step):
     for i, r in enumerate(rows):
         try:
             t = round(float(r[TIME_COL]), 3)
-            sw = round(float(r[SWITCH_COL]), DECIMALS)
-            pr = round(float(r[POINT_COL]), DECIMALS)
+            row = {"time": t,
+                   "switchRailDisp1": round(float(r[SWITCH_COL]), DECIMALS),
+                   "pointRailDisp1": round(float(r[POINT_COL]), DECIMALS)}
+            for c in opt_cols:
+                row[c] = round(float(r[c]), DECIMALS)
         except ValueError as e:
             sys.exit(f"[失败] 第 {i + 2} 行有非数值内容：{e}")
         if prev_t is not None:
@@ -65,7 +87,7 @@ def convert(csv_path, out_path, step):
                 sys.exit(f"[失败] 第 {i + 2} 行步长 {delta}s ≠ {step}s（前一行 t={prev_t}）。"
                          f"数据缺行或步长不匀，请 A 重新导出，或用 --step 指定实际步长。")
         prev_t = t
-        out.append({"time": t, "switchRailDisp1": sw, "pointRailDisp1": pr})
+        out.append(row)
 
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
@@ -73,7 +95,13 @@ def convert(csv_path, out_path, step):
     sw_max = max(r["switchRailDisp1"] for r in out)
     pr_max = max(r["pointRailDisp1"] for r in out)
     print(f"[成功] {len(out)} 条已转换 -> {os.path.basename(out_path)}")
-    print(f"       时间 {out[0]['time']}~{out[-1]['time']}s，步长 {step}s")
+    print(f"       时间 {out[0]['time']}~{out[-1]['time']}s，步长 {step}s，"
+          f"字段 {len(out[0])} 个（必选3 + 可选{len(opt_cols)}）")
+    if opt_cols:
+        print(f"       带出的可选字段：{', '.join(opt_cols)}")
+    if unknown:
+        print(f"       [注意] 以下列不在契约 v2.0 字段表内，已忽略：{', '.join(unknown)}"
+              f"（若是拼写差异请对照 docs/数据格式约定_v2.0_草案.md 第2节修正）")
     print(f"       尖轨最大 {sw_max} mm（阈值150，{'会超限' if sw_max > 150 else '不超限'}）；"
           f"心轨最大 {pr_max} mm（阈值100，{'会超限' if pr_max > 100 else '不超限'}）")
     print(f"       首条 {json.dumps(out[0], ensure_ascii=False)}")
