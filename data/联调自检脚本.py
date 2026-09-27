@@ -137,11 +137,11 @@ try:
         nviews = ntrg = nevts = 0
     conn.close()
     check("数据库 turnout_twin 连接", True)
-    # 时序≥8000=四工况已入库；工单≥20=种子+可能的联动工单；实时值=20测点
+    # 时序≥30000=四工况8000+一天运维历史26000；工单≥20=种子+联动工单；实时值=20测点
     ok = (counts["component"] == 9 and counts["measurement_point"] == 20
-          and counts["timeseries_data"] >= 8000 and counts["work_order"] >= 20
+          and counts["timeseries_data"] >= 30000 and counts["work_order"] >= 20
           and counts["realtime_value"] == 20)
-    check("五张表行数（9/20/≥8000/≥20/20）", ok,
+    check("五张表行数（9/20/≥30000/≥20/20）", ok,
           " ".join(f"{k}={v}" for k, v in counts.items()))
     check("库内超阈值记录", alarms > 0, f"{alarms} 条")
     check("四工况来源齐全（仿真-×××× ×4）", srcs == 4, f"{srcs} 种")

@@ -112,6 +112,14 @@ def db_down(request, exc):
         "detail": str(exc).split("\n")[0]})
 
 
+def tables_ok(*names):
+    """存档表是否已建（05_数据库升级v2.sql）；旧库缺表时相关功能自动降级跳过"""
+    try:
+        return all(q("SELECT to_regclass(%s) IS NOT NULL", (n,))[0][0] for n in names)
+    except psycopg2.Error:
+        return False
+
+
 def latest_values():
     """取实时值表最新值 {point_code: value}"""
     return {p: v for p, v in q("SELECT point_code, value FROM realtime_value")}
@@ -299,12 +307,14 @@ def playback(condition):
             thresholds = dict(cur.fetchall())
     print(f"[回放] 开始注入工况「{condition}」（{len(rows)} 行 × 0.1s）")
     issued = set()
+    log_health = tables_ok("health_score")   # 存档表未升级时跳过落库，不影响回放
     try:
         for r in rows:
             if _play["stop"].is_set():
                 break
             ts = BASE_TS + timedelta(seconds=r["time"])
-            score, grade, issues = 100.0, "优", []
+            vals = {FIELD_TO_POINT[f]: r[f] for f in r if f in FIELD_TO_POINT}
+            score, grade, issues = health_check(vals)
             try:
                 with conn:
                     with conn.cursor() as cur:
@@ -317,8 +327,11 @@ def playback(condition):
                              point in thresholds and r[field] > thresholds[point])
                             for field, point in FIELD_TO_POINT.items() if field in r],
                             template="(%s, %s, %s, %s, now())")
-                vals = {FIELD_TO_POINT[f]: r[f] for f in r if f in FIELD_TO_POINT}
-                score, grade, issues = health_check(vals)
+                        if log_health and int(round(r["time"] * 10)) % 5 == 0:
+                            cur.execute("INSERT INTO health_score "
+                                        "(sim_t, score, grade, condition_name) "
+                                        "VALUES (%s, %s, %s, %s)",
+                                        (r["time"], score, grade, condition))
                 _play["t"] = r["time"]
                 with _play["lock"]:
                     _play["window"].append(r)
@@ -479,8 +492,16 @@ def api_health_trend():
 def api_workorders():
     rows = q("SELECT work_order_id, point_code, status, remark FROM work_order "
              "ORDER BY work_order_id")
-    return {"count": len(rows), "工单": [
+    out = {"count": len(rows), "工单": [
         {"工单号": w, "测点": p, "状态": s, "备注": r} for w, p, s, r in rows]}
+    if tables_ok("maintenance_log"):
+        logs = q("SELECT work_order_id, point_code, problem, "
+                 "to_char(done_at, 'MM-DD HH24:MI:SS') FROM maintenance_log "
+                 "ORDER BY id DESC LIMIT 10")
+        out["维修记录（最近10条）"] = [
+            {"工单号": w, "测点": p, "问题": prob, "闭环时间": t}
+            for w, p, prob, t in logs]
+    return out
 
 
 @app.get("/api/history/{point_code}")
@@ -523,6 +544,9 @@ def api_stats():
     counts = {t: q(f"SELECT count(*) FROM {t}")[0][0] for t in
               ("component", "measurement_point", "timeseries_data",
                "work_order", "realtime_value")}
+    for t in ("health_score", "maintenance_log"):    # 存档表（未升级自动省略）
+        if tables_ok(t):
+            counts[t] = q(f"SELECT count(*) FROM {t}")[0][0]
     latency = round((time.perf_counter() - t0) * 1000, 1)
     # v2 数据库对象（体检脚本 06 的口径）
     try:
@@ -587,6 +611,10 @@ def api_repair(work_order_id: str):
         raise HTTPException(400, f"工单 {work_order_id} 状态为 {status}，无需维修")
     q("UPDATE work_order SET status='resolved', remark=%s WHERE work_order_id=%s",
       (remark + "（维修完成闭环）", work_order_id), fetch=False)
+    if tables_ok("maintenance_log"):    # 维修动作存档（表未升级时跳过）
+        q("INSERT INTO maintenance_log (work_order_id, point_code, problem) "
+          "VALUES (%s, %s, %s)",
+          (work_order_id, point, remark.replace("自动生成：", "")), fetch=False)
     if _play["condition"] != "正常转换":
         _stop_playback()
         _play["stop"].clear()
@@ -631,7 +659,7 @@ canvas{{width:100%;height:340px;display:block}}
 <h1 style="font-size:19px">道岔数字孪生 · 历史趋势回放（20测点 · 四工况）</h1>
 <div class="c">测点：<select id="pt" onchange="load()">{opts}</select>
 叠加：<select id="pt2" onchange="load()"><option value="">（不叠加）</option>{opts2}</select>（粉色副轴）
-时段：<select id="src" onchange="load()"><option value="all">全部（四工况）</option><option value="仿真-正常转换">正常转换</option><option value="仿真-卡阻">卡阻</option><option value="仿真-密贴不良">密贴不良</option><option value="仿真-锁闭失败">锁闭失败</option><option value="fake">基础版假数据</option></select>
+时段：<select id="src" onchange="load()"><option value="all">全部（演示四工况+一天运维）</option><option value="运维-正常转换">一天运维·正常</option><option value="运维-卡阻">一天运维·卡阻</option><option value="运维-密贴不良">一天运维·密贴不良</option><option value="运维-锁闭失败">一天运维·锁闭失败</option><option value="仿真-正常转换">正常转换</option><option value="仿真-卡阻">卡阻</option><option value="仿真-密贴不良">密贴不良</option><option value="仿真-锁闭失败">锁闭失败</option><option value="fake">基础版假数据</option></select>
 <button onclick="load()">刷新</button>
 <button onclick="exportCSV()">⬇ 导出CSV</button>
 <button id="pb" onclick="togglePlay()">▶ 回放</button>

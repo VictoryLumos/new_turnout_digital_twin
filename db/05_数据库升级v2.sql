@@ -125,6 +125,30 @@ ORDER BY point_code;
 COMMENT ON VIEW v_data_quality IS '数据质量视图：每测点行数/首末时间/时间断点数（四工况每小时一段，断点=工况间隔，属预期设计）';
 
 -- ---------------------------------------------------------------------
+-- 5. 运行存档表（2026-09-27 追加）：健康度历史 + 维修记录（幂等）
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS health_score (
+    id             SERIAL PRIMARY KEY,
+    ts             TIMESTAMPTZ NOT NULL DEFAULT now(),  -- 落库时间
+    sim_t          REAL,                                -- 回放内仿真时刻（秒）
+    score          REAL NOT NULL,                       -- 健康度评分 0~100
+    grade          TEXT,                                -- 优/良/预警/故障
+    condition_name TEXT                                -- 回放工况
+);
+CREATE INDEX IF NOT EXISTS idx_health_ts ON health_score (ts);
+COMMENT ON TABLE health_score IS '健康度历史存档：服务API回放期间每0.5s自动落一条，支撑健康度曲线的历史回看';
+
+CREATE TABLE IF NOT EXISTS maintenance_log (
+    id            SERIAL PRIMARY KEY,
+    work_order_id TEXT NOT NULL,                        -- 关联工单号
+    point_code    TEXT,                                 -- 维修测点
+    problem       TEXT,                                 -- 问题（工单备注原文）
+    retest_score  REAL,                                 -- 复测健康度（回放复测后可回填）
+    done_at       TIMESTAMPTZ NOT NULL DEFAULT now()    -- 闭环完成时间
+);
+COMMENT ON TABLE maintenance_log IS '维修记录：工单"维修闭环"时自动写一条，维修动作持久化存档';
+
+-- ---------------------------------------------------------------------
 -- 附：TimescaleDB 检测（装了自动转 hypertable；没装按普通表运行，不影响以上全部功能）
 -- ---------------------------------------------------------------------
 DO $do$

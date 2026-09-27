@@ -64,18 +64,18 @@ counts = {}
 for t in tables:
     cur.execute(f"SELECT count(*) FROM {t}")
     counts[t] = cur.fetchone()[0]
-check("六张表行数", counts["timeseries_data"] >= 8000 and counts["measurement_point"] == 20,
+check("六张表行数", counts["timeseries_data"] >= 30000 and counts["measurement_point"] == 20,
       " ".join(f"{k}={v}" for k, v in counts.items()))
 cur.execute("SELECT source, rows_total, alarm_rows FROM v_source_stats ORDER BY ts_min")
 src_rows = cur.fetchall()
-check("数据源分布（v_source_stats）", len(src_rows) >= 5,
+check("数据源分布（v_source_stats）", len(src_rows) >= 8,
       "；".join(f"{s.split('-')[-1]} {n}行/超阈{a}" for s, n, a in src_rows))
 
 # ---- 3) 数据质量 ----
 cur.execute("SELECT max(gaps), count(*) FROM v_data_quality")
 max_gaps, pts = cur.fetchone()
 check("时序连续性（v_data_quality）", max_gaps is not None,
-      f"{pts} 测点，每测点最多 {max_gaps} 个时间断点（四工况每小时一段，3 个间隔为预期设计）")
+      f"{pts} 测点，每测点最多 {max_gaps} 个时间断点（四工况+一天13次运维动作，时段间隔为预期设计）")
 cur.execute("SELECT count(*) FILTER (WHERE alarm_threshold IS NOT NULL), count(*) "
             "FROM measurement_point")
 with_th, total = cur.fetchone()
