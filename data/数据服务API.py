@@ -407,7 +407,7 @@ fill="#e2e8f0" font-size="27" font-weight="bold">{score:.0f}</text>
 <div id="idf" style="font-size:12px;color:#94a3b8">等待回放数据…（点上方工况后约3秒出结果）</div></div>
 <div class="c"><b>工单看板</b>（告警自动生成 → 维修闭环 → 复测恢复）：<div id="wos" class="wos">加载中…</div></div>
 <div class="c"><b>接口清单</b><br>
-<a href="/trend">📈 趋势回放页（/trend）</a> · <a href="/api/diagnosis">诊断（/api/diagnosis）</a> · <a href="/api/stats">系统状态（/api/stats）</a><br>
+<a href="/trend">📈 趋势回放页（/trend）</a> · <a href="/api/diagnosis">诊断（/api/diagnosis）</a> · <a href="/api/stats">系统状态（/api/stats）</a> · <a href="/api/faults">故障清单（/api/faults）</a><br>
 GET /api/realtime 实时监测 · GET /api/alarms 告警 · GET /api/health 健康度<br>
 GET /api/workorders 工单 · GET /api/history/测点编码?limit=n 历史查询 · GET /api/points 测点清单<br>
 GET /api/conditions 数据集 · GET /api/identify 工况自动识别<br>
@@ -710,6 +710,38 @@ def api_points():
              "FROM measurement_point ORDER BY point_code")
     return {"count": len(rows), "测点": [
         {"编码": p, "字段": f, "单位": u, "阈值": t} for p, f, u, t in rows]}
+
+
+@app.get("/api/faults")
+def api_faults(request: Request):
+    """故障事件清单（v_fault_episodes 视图）：超阈记录按30秒聚合成事件段
+
+    每段含：开始/结束/持续秒数/测点/超阈点数/峰值/阈值/来源——
+    "什么时候、哪个测点、超了多少、持续多久"一请求出全天清单。
+    """
+    if not q("SELECT to_regclass('v_fault_episodes') IS NOT NULL")[0][0]:
+        raise HTTPException(503, "视图未建：执行 db/05_数据库升级v2.sql 后可用")
+    rows = q("SELECT point_code, to_char(start_ts, 'MM-DD HH24:MI:SS'), "
+             "to_char(end_ts, 'MM-DD HH24:MI:SS'), alarm_points, peak_value, "
+             "threshold, source, duration_s FROM v_fault_episodes "
+             "ORDER BY start_ts DESC LIMIT 200")
+    events = [{"测点": p, "开始": s, "结束": e, "超阈点数": int(n),
+               "峰值": float(pk), "阈值": float(th), "来源": src,
+               "持续秒": float(d)} for p, s, e, n, pk, th, src, d in rows]
+    payload = {"count": len(events), "事件段": events,
+               "说明": "数据库触发器审计(告警事实)按30秒聚合；是否判为故障由健康度规则层决定"}
+    if wants_html(request):
+        rows_html = "".join(
+            f"<tr><td>{e['开始']}</td><td>{e['测点']}</td><td>{e['峰值']}</td>"
+            f"<td>{e['阈值']}</td><td>{e['持续秒']}</td><td>{e['超阈点数']}</td>"
+            f"<td>{e['来源']}</td></tr>" for e in events)
+        return HTMLResponse(PAGE_HEAD.format(title="故障事件清单") + f"""
+<div class="c"><b>全天故障/超限事件段（数据库触发器审计自动聚合）</b>
+<table><tr><th>开始</th><th>测点</th><th>峰值</th><th>阈值</th><th>持续秒</th><th>超阈点数</th><th>来源</th></tr>
+{rows_html}</table>
+<div style="font-size:12px;color:#475569;margin-top:8px">审计层只记"越阈事实"；是否判为故障由健康度规则层决定（正常转换终点160mm越过演示阈值150也如实记录——分层设计）。</div></div>
+</body></html>""")
+    return payload
 
 
 @app.get("/api/model")

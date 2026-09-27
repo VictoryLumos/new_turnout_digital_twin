@@ -44,3 +44,13 @@ WO-2026-022,T01-SM-01-CURR,resolved,自动生成：转辙机过流（维修完�
 WO-2026-023,T01-SR-01-DISP,resolved,自动生成：转换中断（维修完成闭环）
 WO-2026-024,T01-SM-01-LOCK,resolved,自动生成：未锁闭且未密贴（维修完成闭环）
 WO-2026-025,T01-SM-01-LOCK,resolved,自动生成：锁闭失败（维修完成闭环）
+WO-2026-026,T01-SM-01-CURR,resolved,自动生成：转辙机过流（维修完成闭环）
+WO-2026-027,T01-SR-01-DISP,resolved,自动生成：转换中断（维修完成闭环）
+WO-2026-028,T01-SM-01-LOCK,resolved,自动生成：未锁闭且未密贴（维修完成闭环）
+WO-2026-029,T01-SR-01-CLOSE,resolved,自动生成：密贴不良/到位不足（维修完成闭环）
+WO-2026-030,T01-SM-01-LOCK,resolved,自动生成：锁闭失败（维修完成闭环）
+WO-2026-031,T01-SM-01-CURR,open,自动生成：转辙机过流
+WO-2026-032,T01-SR-01-DISP,open,自动生成：转换中断
+WO-2026-033,T01-SM-01-LOCK,open,自动生成：未锁闭且未密贴
+WO-2026-034,T01-SR-01-CLOSE,open,自动生成：密贴不良/到位不足
+WO-2026-035,T01-SM-01-LOCK,open,自动生成：锁闭失败
