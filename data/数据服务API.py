@@ -359,18 +359,30 @@ def index():
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>道岔数字孪生 · 数据服务</title>
 <style>body{{font-family:"Microsoft YaHei";background:#0b1220;color:#e2e8f0;padding:24px}}
-.c{{background:#111c30;border:1px solid #1e2f4d;border-radius:12px;padding:16px 20px;margin:12px 0;max-width:640px}}
+.c{{background:#111c30;border:1px solid #1e2f4d;border-left:3px solid #38bdf8;border-radius:12px;padding:16px 20px;margin:12px 0;max-width:640px}}
 a{{color:#38bdf8}} code{{background:#1e2f4d;padding:1px 6px;border-radius:4px}}
 button{{background:#2563eb;border:0;color:#fff;border-radius:6px;padding:3px 10px;cursor:pointer;font-size:12px}}
 .wos{{font-size:13px;margin-top:6px;line-height:1.9}}</style></head><body>
-<h1>道岔数字孪生 · 数据服务（B线 · 完整版服务层）</h1>
-<div class="c">健康度 <span id="score" style="font-size:34px;font-weight:bold;color:{color}">{score:.0f}</span>
-<span id="grade" style="color:{color}">{grade}</span>
-<div id="issues" style="font-size:13px;color:#94a3b8;margin-top:6px">
+<h1 style="font-size:18px">道岔数字孪生 · 数据服务
+<span style="font-size:12px;color:#64748b;font-weight:normal">B线 · 完整版服务层 v2.1</span></h1>
+<div class="c" style="display:flex;gap:22px;align-items:center">
+<svg width="116" height="116" viewBox="0 0 116 116" style="flex:none">
+<circle cx="58" cy="58" r="48" fill="none" stroke="#1e2f4d" stroke-width="11"/>
+<circle id="ring" cx="58" cy="58" r="48" fill="none" stroke="{color}" stroke-width="11"
+stroke-linecap="round" stroke-dasharray="301.6" stroke-dashoffset="{301.6 * (1 - score / 100):.1f}"
+transform="rotate(-90 58 58)" style="transition:stroke-dashoffset .6s,stroke .6s"/>
+<text id="score" x="58" y="52" text-anchor="middle" dominant-baseline="middle"
+fill="#e2e8f0" font-size="27" font-weight="bold">{score:.0f}</text>
+<text x="58" y="76" text-anchor="middle" fill="#64748b" font-size="11">健康度</text>
+<text id="grade" x="58" y="94" text-anchor="middle" fill="{color}" font-size="13" font-weight="bold">{grade}</text>
+</svg>
+<div style="flex:1;min-width:0">
+<div id="cond" style="font-size:13px;color:#64748b">当前回放：无</div>
+<div id="issues" style="font-size:13px;color:{'#f87171' if issues else '#94a3b8'};margin-top:4px">
 {'；'.join(i['规则'] for i in issues) or '无扣分项'}</div>
-<div id="cond" style="font-size:13px;color:#64748b;margin-top:4px">当前回放：无</div>
 <canvas id="hspark" style="width:100%;height:56px;display:block;margin-top:8px"></canvas>
-<div style="font-size:11px;color:#475569">本轮回放健康度曲线（0~100，虚线=60分故障线）— 注入故障看跳水，维修闭环看回升</div></div>
+<div style="font-size:11px;color:#475569">本轮回放健康度曲线（虚线=60分故障线）— 注入故障看跳水，维修闭环看回升</div>
+</div></div>
 <div class="c"><b>行为模型回放</b>（点击注入工况，观察健康度与工单联动）：<br><br>{conds}
 <a href="javascript:fetch('/api/stop').then(r=>r.json()).then(loadAll)">停止</a></div>
 <div class="c"><b>工况自动识别</b>（8维统计特征 → 四工况最近邻 · 数据驱动判工况，v2.1）
@@ -393,11 +405,14 @@ document.getElementById('issues').textContent=d.msg;loadAll()}})}}
 function load(){{
 fetch('/api/health').then(r=>r.json()).then(d=>{{
 const co={{'优':'#22c55e','良':'#eab308','预警':'#f97316','故障':'#ef4444'}};
-document.getElementById('score').textContent=d.健康度评分;
-document.getElementById('score').style.color=co[d.等级];
-document.getElementById('grade').textContent=d.等级;
-document.getElementById('grade').style.color=co[d.等级];
-document.getElementById('issues').textContent=d.扣分明细.map(i=>i.规则).join('；')||'无扣分项';
+const sc=d.健康度评分,c=co[d.等级];
+document.getElementById('score').textContent=Math.round(sc);
+const g=document.getElementById('grade');g.textContent=d.等级;g.setAttribute('fill',c);
+const ring=document.getElementById('ring');
+ring.style.stroke=c;ring.setAttribute('stroke-dashoffset',(301.6*(1-sc/100)).toFixed(1));
+const is=document.getElementById('issues');
+is.textContent=d.扣分明细.map(i=>i.规则).join('；')||'无扣分项';
+is.style.color=d.扣分明细.length?'#f87171':'#94a3b8';
 document.getElementById('cond').textContent='当前回放：'+d.当前回放+(d.仿真时刻!=null?' · 仿真时刻 '+d.仿真时刻+'s':'')}})}}
 function loadWos(){{
 fetch('/api/workorders').then(r=>r.json()).then(d=>{{
@@ -634,6 +649,94 @@ def api_points():
              "FROM measurement_point ORDER BY point_code")
     return {"count": len(rows), "测点": [
         {"编码": p, "字段": f, "单位": u, "阈值": t} for p, f, u, t in rows]}
+
+
+@app.get("/api/model")
+def api_model():
+    """测点↔构件↔3D模型节点 映射总表（C 端驱动模型的一站式对照接口）
+
+    C 的用法：拿测点编码或数据字段名 → 查 node_name/model_node 找到 glTF 节点 →
+    按 unit 换算位移 → 按 alarm_threshold 判超限变红（阈值与库内同源）。
+    """
+    comps = q("SELECT c.component_code, c.turnout_id, c.component_type, "
+              "c.model_node, c.asset_id, count(p.point_code) AS pts "
+              "FROM component c LEFT JOIN measurement_point p USING (component_code) "
+              "GROUP BY c.component_code, c.turnout_id, c.component_type, "
+              "c.model_node, c.asset_id ORDER BY c.component_code")
+    pts = q("SELECT point_code, field_name, node_name, unit, alarm_threshold, "
+            "component_code FROM measurement_point ORDER BY point_code")
+    return {
+        "构件": [{"编码": c, "道岔": t, "类型": ty, "模型节点": n, "资产ID": a, "测点数": int(p)}
+                for c, t, ty, n, a, p in comps],
+        "测点映射": [{"测点": p, "数据字段": f, "模型节点": n, "单位": u, "阈值": th, "所属构件": c}
+                    for p, f, n, u, th, c in pts],
+        "用法": "字段值→按测点映射找模型节点→毫米×0.001换算移动模型→value>阈值变红；"
+                "A 确认导出后 model_node 以 /api/model 实时返回为准（库内可改，无需改页面）",
+    }
+
+
+@app.post("/api/ingest")
+def api_ingest(payload: dict):
+    """统一数据入库接口（传感器/仿真数据直推，契约 v2.0 第 6 节的 HTTP 实装）
+
+    请求体：{"source": "sensor-01", "rows": [{"time": 0.0, "switchRailDisp1": 1.2,
+              "pointRailDisp1": 0.5, "switchMachineCurrent": 3.0, ...}, ...]}
+    - 字段按契约 v2.0（必选3+可选17），未知字段忽略并在响应中列明
+    - 时间二选一：time=秒数（基准 2026-09-26 00:00+08）或 ts=ISO8601 字符串
+    - 入时序表（主键去重幂等）→ 触发器自动告警审计 → 刷新实时值 → /api/health 立即生效
+    """
+    src = str(payload.get("source") or "sensor")
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise HTTPException(400, "请求体需为 {'source':..., 'rows':[{...}]} 且 rows 非空")
+    if len(rows) > 5000:
+        raise HTTPException(400, "单次最多 5000 行，请分批")
+    thresholds = {p: th for p, th in q(
+        "SELECT point_code, alarm_threshold FROM measurement_point "
+        "WHERE alarm_threshold IS NOT NULL")}
+    payload_rows, latest, unknown = [], {}, set()
+    for r in rows:
+        try:
+            if r.get("ts") is not None:
+                ts_dt = datetime.fromisoformat(str(r["ts"]))
+                if ts_dt.tzinfo is None:
+                    ts_dt = ts_dt.replace(tzinfo=timezone(timedelta(hours=8)))
+            else:
+                ts_dt = BASE_TS + timedelta(seconds=float(r["time"]))
+            for field, point in FIELD_TO_POINT.items():
+                if field in r and r[field] is not None:
+                    v = float(r[field])
+                    payload_rows.append((point, ts_dt, v, src))
+                    latest[point] = (v, ts_dt)
+            unknown |= {k for k in r if k not in FIELD_TO_POINT and k not in ("time", "ts")}
+        except (TypeError, ValueError) as e:
+            raise HTTPException(400, f"行解析失败（{e}）：{json.dumps(r, ensure_ascii=False)[:120]}")
+    if not payload_rows:
+        raise HTTPException(400, f"rows 里没有契约字段（字段清单见 /api/points）；"
+                                 f"收到的键：{sorted({k for r in rows for k in r})[:15]}")
+    conn = _pool.getconn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                execute_values(cur,
+                    "INSERT INTO timeseries_data (point_code, ts, value, source) VALUES %s "
+                    "ON CONFLICT (point_code, ts) DO NOTHING", payload_rows,
+                    template="(%s, %s, %s, %s)")
+                execute_values(cur,
+                    "INSERT INTO realtime_value (point_code, value, ts, alarm, updated_at) "
+                    "VALUES %s ON CONFLICT (point_code) DO UPDATE SET "
+                    "value=EXCLUDED.value, ts=EXCLUDED.ts, alarm=EXCLUDED.alarm, "
+                    "updated_at=now()",
+                    [(p, v, t, p in thresholds and v > thresholds[p])
+                     for p, (v, t) in latest.items()],
+                    template="(%s, %s, %s, %s, now())")
+    finally:
+        _pool.putconn(conn)
+    return {"消息": f"已入库 {len(payload_rows)} 条（来源 {src}，重复自动跳过），"
+                   f"实时值已更新 {len(latest)} 个测点，/api/health 与 /api/identify 立即生效",
+            "入库条数": len(payload_rows),
+            "忽略的未知字段": sorted(unknown) or "无",
+            "覆盖测点": sorted(latest)}
 
 
 @app.get("/trend", response_class=HTMLResponse)

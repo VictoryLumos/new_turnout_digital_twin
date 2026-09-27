@@ -149,6 +149,24 @@ CREATE TABLE IF NOT EXISTS maintenance_log (
 COMMENT ON TABLE maintenance_log IS '维修记录：工单"维修闭环"时自动写一条，维修动作持久化存档';
 
 -- ---------------------------------------------------------------------
+-- 6. 队友只读账号（幂等）：A/C 用 pgAdmin 直连查库，只读防误写
+--    连接参数：主机 localhost(或B的IP)、端口5432、库 turnout_twin、
+--              用户 turnout_read、密码 turnout_read
+-- ---------------------------------------------------------------------
+DO $do$
+BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'turnout_read') THEN
+        CREATE ROLE turnout_read LOGIN PASSWORD 'turnout_read';
+        RAISE NOTICE '已创建只读账号 turnout_read / turnout_read';
+    END IF;
+END
+$do$;
+GRANT CONNECT ON DATABASE turnout_twin TO turnout_read;
+GRANT USAGE ON SCHEMA public TO turnout_read;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO turnout_read;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO turnout_read;
+
+-- ---------------------------------------------------------------------
 -- 附：TimescaleDB 检测（装了自动转 hypertable；没装按普通表运行，不影响以上全部功能）
 -- ---------------------------------------------------------------------
 DO $do$
