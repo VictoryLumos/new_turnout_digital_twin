@@ -27,27 +27,56 @@ DB = dict(host="localhost", port=5432, user="postgres",
 
 PG_DUMP = r"D:\PostgreSQL\bin\pg_dump.exe"
 
-# 表名 → (导出文件名, 排序字段)
+# 表名 → (导出文件名, 排序字段)；v2 新表存在才导（旧库不报错）
 TABLES = {
-    "component":       ("构件表.csv",       "component_code"),
+    "component":         ("构件表.csv",     "component_code"),
     "measurement_point": ("测点表.csv",     "point_code"),
-    "timeseries_data": ("时序数据.csv",     "point_code, ts"),
-    "realtime_value":  ("实时值表.csv",     "point_code"),
-    "work_order":      ("工单表.csv",       "work_order_id"),
+    "timeseries_data":   ("时序数据.csv",   "point_code, ts"),
+    "realtime_value":    ("实时值表.csv",   "point_code"),
+    "work_order":        ("工单表.csv",     "work_order_id"),
+    "alarm_event":       ("告警事件审计.csv", "ts"),
+    "health_score":      ("健康度存档.csv", "id"),
+    "maintenance_log":   ("维修记录.csv",   "id"),
 }
+
+# 视图 → 导出文件名（05_数据库升级v2 的分析视图，一屏统计给队友/报告用）
+VIEWS = {
+    "v_source_stats":   "视图_数据源统计.csv",
+    "v_alarm_records":  "视图_超阈明细.csv",
+    "v_data_quality":   "视图_数据质量.csv",
+}
+
+
+def _has(cur, name):
+    cur.execute("SELECT to_regclass(%s) IS NOT NULL", (name,))
+    return cur.fetchone()[0]
 
 
 def export_csv(conn):
     count = 0
-    for table, (fname, order) in TABLES.items():
-        path = os.path.join(OUT_DIR, fname)
-        with conn.cursor() as cur, open(path, "w", newline="", encoding="utf-8-sig") as f:
-            cur.copy_expert(
-                f"COPY (SELECT * FROM {table} ORDER BY {order}) TO STDOUT "
-                f"WITH (FORMAT csv, HEADER true)", f)
-        n = sum(1 for _ in open(path, encoding="utf-8-sig")) - 1
-        print(f"  {fname:<14} {n:>4} 行")
-        count += 1
+    with conn.cursor() as cur:
+        for table, (fname, order) in TABLES.items():
+            if not _has(cur, table):
+                continue
+            path = os.path.join(OUT_DIR, fname)
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                cur.copy_expert(
+                    f"COPY (SELECT * FROM {table} ORDER BY {order}) TO STDOUT "
+                    f"WITH (FORMAT csv, HEADER true)", f)
+            n = sum(1 for _ in open(path, encoding="utf-8-sig")) - 1
+            print(f"  {fname:<16} {n:>6} 行")
+            count += 1
+        for view, fname in VIEWS.items():
+            if not _has(cur, view):
+                continue
+            path = os.path.join(OUT_DIR, fname)
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                cur.copy_expert(
+                    f"COPY (SELECT * FROM {view}) TO STDOUT "
+                    f"WITH (FORMAT csv, HEADER true)", f)
+            n = sum(1 for _ in open(path, encoding="utf-8-sig")) - 1
+            print(f"  {fname:<16} {n:>6} 行")
+            count += 1
     return count
 
 
