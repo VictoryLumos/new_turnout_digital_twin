@@ -1,4 +1,4 @@
-# 环境检查记录 - D1 (验收通过)
+﻿# 环境检查记录 - D1 (验收通过)
 
 ## 三台电脑配置
 | 成员 | Python版本 | 虚拟环境路径 | Streamlit运行状态 | 截图 |
@@ -8,7 +8,7 @@
 | R3   | (待填)    | (待填)                                   | ☐ 待复测 | 待传 |
 
 ## 统一启动命令（已锁定）
-cd D:\turnout_twin
+cd /d D:\turnout_twin
 .venv\Scripts\activate
 python -m streamlit run app_min.py
 

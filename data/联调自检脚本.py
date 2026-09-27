@@ -6,7 +6,7 @@
     每周联调前跑一遍，10 秒确认 B 侧整条管道是否健康：
       1) data.json 契约校验（字段 / 条数 / 步长 / 超限演示段）
       2) WebSocket 推送就绪（脚本在 + websockets 库已装）
-      3) 数据库 turnout_twin 连通 + 四张表行数 + 超阈值记录
+      3) 数据库 turnout_twin 连通 + 五张表行数（含实时值表）+ 超阈值记录
     全部 [OK] = B 这边没问题；联调出问题就去查 C 的页面或 A 的模型/数据。
 
 用法：
@@ -77,7 +77,8 @@ try:
                             connect_timeout=5)
     cur = conn.cursor()
     counts = {}
-    for t in ("component", "measurement_point", "timeseries_data", "work_order"):
+    for t in ("component", "measurement_point", "timeseries_data",
+              "work_order", "realtime_value"):
         cur.execute(f"SELECT count(*) FROM {t}")
         counts[t] = cur.fetchone()[0]
     cur.execute("SELECT count(*) FROM timeseries_data d "
@@ -87,8 +88,8 @@ try:
     conn.close()
     check("数据库 turnout_twin 连接", True)
     expect = {"component": 9, "measurement_point": 20,
-              "timeseries_data": 160, "work_order": 20}
-    check("四张表行数（9/20/160/20）", counts == expect,
+              "timeseries_data": 160, "work_order": 20, "realtime_value": 2}
+    check("五张表行数（9/20/160/20/2）", counts == expect,
           " ".join(f"{k}={v}" for k, v in counts.items()))
     check("库内超阈值记录", alarms > 0, f"{alarms} 条")
 except Exception as e:

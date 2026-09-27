@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>道岔数字孪生 · WebSocket 实时监控台（B线自检页）</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family:"Microsoft YaHei",sans-serif; background:#0b1220; color:#e2e8f0; margin:0; padding:20px 24px; }
+  h1 { font-size:19px; display:flex; align-items:center; gap:12px; margin:0 0 14px; }
+  .status { padding:3px 12px; border-radius:12px; font-size:12px; font-weight:normal; }
+  .on  { background:#14532d; color:#86efac; }
+  .off { background:#7f1d1d; color:#fca5a5; }
+  .wrap { max-width:900px; }
+  .stats { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px; }
+  .stat { background:#111c30; border:1px solid #1e2f4d; border-radius:10px; padding:8px 14px; min-width:110px; }
+  .stat .k { font-size:11px; color:#64748b; }
+  .stat .v { font-size:18px; font-weight:bold; font-variant-numeric:tabular-nums; }
+  .cards { display:flex; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
+  .card { flex:1; min-width:260px; background:#111c30; border:1px solid #1e2f4d; border-radius:12px; padding:14px 18px; }
+  .card.alarm { border-color:#7f1d1d; }
+  .row { display:flex; justify-content:space-between; align-items:center; font-size:13px; color:#94a3b8; }
+  .num { font-size:32px; font-weight:bold; font-variant-numeric:tabular-nums; margin:2px 0 6px; }
+  .badge { color:#f87171; font-weight:bold; visibility:hidden; }
+  .barwrap { background:#1e2f4d; border-radius:7px; height:12px; overflow:hidden; }
+  .bar { height:100%; width:0%; transition:width .1s linear; }
+  .panel { background:#111c30; border:1px solid #1e2f4d; border-radius:12px; padding:12px 14px 6px; }
+  .panel .title { font-size:12px; color:#64748b; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center; }
+  canvas { width:100%; height:240px; display:block; }
+  .controls { display:flex; gap:8px; align-items:center; margin-top:10px; }
+  input { background:#0b1220; color:#e2e8f0; border:1px solid #1e2f4d; border-radius:6px; padding:5px 9px; width:200px; font-size:13px; }
+  button { background:#2563eb; border:0; color:#fff; border-radius:6px; padding:5px 14px; cursor:pointer; font-size:13px; }
+  button.ghost { background:#1e2f4d; }
+  .note { font-size:12px; color:#475569; margin-top:12px; line-height:1.7; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>道岔数字孪生 · WebSocket 实时监控台 <span id="st" class="status off">连接中…</span></h1>
+
+  <div class="stats">
+    <div class="stat"><div class="k">仿真时间</div><div class="v"><span id="stime">--</span>s</div></div>
+    <div class="stat"><div class="k">循环轮数</div><div class="v" id="loops">0</div></div>
+    <div class="stat"><div class="k">已接收</div><div class="v" id="cnt">0</div></div>
+    <div class="stat"><div class="k">实际速率</div><div class="v"><span id="rate">0</span>/s</div></div>
+  </div>
+
+  <div class="cards">
+    <div class="card" id="swCard">
+      <div class="row"><span>尖轨位移 switchRailDisp1</span><span id="swA" class="badge">⚠ 超限 &gt;150mm</span></div>
+      <div class="num"><span id="sw">--</span> <small style="font-size:14px;color:#64748b">mm</small></div>
+      <div class="barwrap"><div id="swB" class="bar" style="background:#38bdf8"></div></div>
+    </div>
+    <div class="card" id="prCard">
+      <div class="row"><span>心轨位移 pointRailDisp1</span><span id="prA" class="badge">⚠ 超限 &gt;100mm</span></div>
+      <div class="num"><span id="pr">--</span> <small style="font-size:14px;color:#64748b">mm</small></div>
+      <div class="barwrap"><div id="prB" class="bar" style="background:#fbbf24"></div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="title">
+      <span>实时曲线（最近 30 秒 · 红色虚线=告警阈值 尖轨150 / 心轨100）</span>
+      <button class="ghost" id="pauseBtn" onclick="togglePause()">⏸ 暂停</button>
+    </div>
+    <canvas id="chart"></canvas>
+  </div>
+
+  <div class="controls">
+    <span style="font-size:12px;color:#64748b">服务地址</span>
+    <input id="url" value="ws://localhost:8765">
+    <button onclick="go()">重连</button>
+  </div>
+
+  <div class="note">
+    B 线 WebSocket 通道自检页（不是项目交付物——正式仪表盘与 3D 模型页面由 C 按《统一标准》实现）。
+    启动 <b>WebSocket推送服务.py</b> 后打开本页：数值 0.1s 刷新、8 秒一轮；曲线越过红色虚线即超限（尖轨150/心轨100）。
+    C 的正式页面可直接复用本页连接代码：new WebSocket → onmessage 解析 JSON。
+  </div>
+</div>
+
+<script>
+const SW_LIMIT = 150, PR_LIMIT = 100, MAXPTS = 300;   // 300点 ≈ 30秒窗口
+let ws, reconnectTimer, paused = false;
+let swArr = [], prArr = [];
+let received = 0, loops = 0, lastTime = null;
+let rateStamps = [];
+
+const $ = id => document.getElementById(id);
+
+function setStatus(text, on) {
+  $("st").textContent = text;
+  $("st").className = "status " + (on ? "on" : "off");
+}
+
+function connect() {
+  const url = $("url").value.trim();
+  try { ws = new WebSocket(url); } catch (e) { setStatus("地址无效", false); return; }
+  setStatus("连接中…", false);
+  ws.onopen = () => setStatus("已连接 " + url, true);
+  ws.onmessage = (ev) => {
+    let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+    const sw = Number(d.switchRailDisp1), pr = Number(d.pointRailDisp1);
+    const t = Number(d.time);
+    received++;
+    rateStamps.push(Date.now());
+    if (lastTime !== null && t < lastTime) loops++;
+    lastTime = t;
+
+    if (!paused) {
+      swArr.push(sw); prArr.push(pr);
+      if (swArr.length > MAXPTS) { swArr.shift(); prArr.shift(); }
+      render(sw, pr, t);
+    }
+    draw();
+  };
+  ws.onclose = () => { setStatus("已断开，2秒后自动重连", false); reconnectTimer = setTimeout(connect, 2000); };
+  ws.onerror = () => { try { ws.close(); } catch (e) {} };
+}
+
+function render(sw, pr, t) {
+  const swAlarm = sw > SW_LIMIT, prAlarm = pr > PR_LIMIT;
+  $("sw").textContent = sw.toFixed(2);
+  $("pr").textContent = pr.toFixed(2);
+  $("swA").style.visibility = swAlarm ? "visible" : "hidden";
+  $("prA").style.visibility = prAlarm ? "visible" : "hidden";
+  $("swCard").className = "card" + (swAlarm ? " alarm" : "");
+  $("prCard").className = "card" + (prAlarm ? " alarm" : "");
+  const swB = $("swB"), prB = $("prB");
+  swB.style.width = Math.min(100, sw / 200 * 100) + "%";
+  prB.style.width = Math.min(100, pr / 150 * 100) + "%";
+  swB.style.background = swAlarm ? "#ef4444" : "#38bdf8";
+  prB.style.background = prAlarm ? "#ef4444" : "#fbbf24";
+  $("stime").textContent = t.toFixed(1);
+  $("loops").textContent = loops;
+  $("cnt").textContent = received;
+  const now = Date.now();
+  rateStamps = rateStamps.filter(s => now - s < 1000);
+  $("rate").textContent = rateStamps.length;
+}
+
+// ---------- 实时曲线 ----------
+const canvas = $("chart");
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = canvas.clientWidth * dpr;
+  canvas.height = canvas.clientHeight * dpr;
+  draw();
+}
+function draw() {
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  if (!W || !H) return;
+  const PAD_L = 44, PAD_R = 10, PAD_T = 10, PAD_B = 20;
+  const plotW = W - PAD_L - PAD_R, plotH = H - PAD_T - PAD_B;
+  const YMAX = 180;                                  // 纵轴 0~180mm
+  const y = v => PAD_T + plotH * (1 - v / YMAX);
+  const dpr = window.devicePixelRatio || 1;
+
+  ctx.clearRect(0, 0, W, H);
+  // 网格
+  ctx.strokeStyle = "#1e2f4d"; ctx.fillStyle = "#475569";
+  ctx.font = 10 * dpr + "px sans-serif"; ctx.lineWidth = 1;
+  for (let v = 0; v <= YMAX; v += 30) {
+    ctx.beginPath(); ctx.moveTo(PAD_L, y(v)); ctx.lineTo(W - PAD_R, y(v)); ctx.stroke();
+    ctx.textAlign = "right"; ctx.fillText(v + "", PAD_L - 6, y(v) + 3 * dpr);
+  }
+  // 阈值虚线
+  ctx.setLineDash([5 * dpr, 4 * dpr]);
+  ctx.strokeStyle = "#ef4444";
+  [SW_LIMIT, PR_LIMIT].forEach(v => {
+    ctx.beginPath(); ctx.moveTo(PAD_L, y(v)); ctx.lineTo(W - PAD_R, y(v)); ctx.stroke();
+  });
+  ctx.setLineDash([]);
+  // 数据曲线
+  const line = (arr, color) => {
+    if (arr.length < 2) return;
+    const n = arr.length, x0 = W - PAD_R - plotW * (MAXPTS - n) / MAXPTS;   // 右对齐滚动
+    ctx.beginPath();
+    ctx.strokeStyle = color; ctx.lineWidth = 1.6 * dpr;
+    for (let i = 0; i < n; i++) {
+      const px = PAD_L + plotW * i / MAXPTS + (x0 - PAD_L) * 0;
+      const xx = W - PAD_R - plotW * (n - 1 - i) / MAXPTS;
+      i ? ctx.lineTo(xx, y(arr[i])) : ctx.moveTo(xx, y(arr[i]));
+    }
+    ctx.stroke();
+  };
+  line(prArr, "#fbbf24");
+  line(swArr, "#38bdf8");
+  // 图例
+  ctx.textAlign = "left"; ctx.fillStyle = "#38bdf8";
+  ctx.fillText("— 尖轨", PAD_L + 6, PAD_T + 12 * dpr);
+  ctx.fillStyle = "#fbbf24";
+  ctx.fillText("— 心轨", PAD_L + 64, PAD_T + 12 * dpr);
+  ctx.fillStyle = "#ef4444";
+  ctx.fillText("- - 阈值", PAD_L + 122, PAD_T + 12 * dpr);
+}
+
+function togglePause() {
+  paused = !paused;
+  $("pauseBtn").textContent = paused ? "▶ 继续" : "⏸ 暂停";
+}
+function go() {
+  clearTimeout(reconnectTimer);
+  if (ws) { ws.onclose = null; try { ws.close(); } catch (e) {} }
+  connect();
+}
+
+window.addEventListener("resize", resizeCanvas);
+resizeCanvas();
+connect();
+</script>
+</body>
+</html>
