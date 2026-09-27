@@ -7,7 +7,7 @@
 | 目录 | 责任人 | 内容 |
 |---|---|---|
 | model/ | A | glTF/GLB 模型（待 A 首次提交时创建） |
-| data/ | B | data.json、WebSocket推送服务.py、仿真数据转换脚本.py |
+| data/ | B | data.json、WebSocket推送服务.py、数据服务API.py、四工况数据集（扩展数据集v2/）、仿真数据转换脚本.py、自检与压测脚本 |
 | web/ | C | HTML/JS 页面（待 C 首次提交时创建） |
 | db/ | B | 数据库脚本（**新增目录**，不在《统一标准》原定结构内） |
 | docs/ | 共同 | 接口契约、设计文档 |
@@ -26,7 +26,7 @@
 
 ## 快速上手
 
-**B 侧一键自检**：`python data/联调自检脚本.py`——数据契约 / 推送就绪 / 数据库连通一次查完，全 [OK] 即可联调。
+**B 侧一键自检**：`python data/联调自检脚本.py`——数据契约 / 四工况数据集 / 依赖 / 数据库 / 工单联动证据一次查完（15 项），全 [OK] 即可联调。
 
 **库内实时表格演示**：`python data/实时数据入库.py` 后，另开窗口用 psql 查 `realtime_value` 表（加 `\watch 1` 每秒自动刷新），即可看到库里数值实时跳动——对应完整版"实时接入→库"链路。
 
@@ -40,7 +40,9 @@ python data/WebSocket推送服务.py        # B 机上运行，端口 8765
 
 C 连接 `ws://localhost:8765`（跨机用 B 的 IPv4）；失败则退回本地 JSON，不阻塞交付。
 
-**数据库（完整版线，已跑通）**：PostgreSQL 17.9 装于 B 机 `D:\PostgreSQL`（Windows 服务 postgresql-x64-17，开机自启），库 `turnout_twin`，账号 postgres / postgres，端口 5432。建表脚本 `db/01_建表与种子数据.sql`（TimescaleDB 可选，未装自动降级），入库脚本 `db/02_数据导入脚本.py`。当前库内：构件 9、测点 20、时序 160、工单 20。
+**服务层 API（完整版线核心，一键演示）**：双击 `data/服务API演示.bat`（或 `python -m uvicorn 数据服务API:app --port 8000`），浏览器开 `http://localhost:8000/`：可视化状态板 + 四工况回放注入 + 健康度/工单/维修闭环 + **工况自动识别**（8 维统计特征最近邻，约 3 秒出识别结果与置信度）+ `/trend` 历史趋势回放页。CORS 已放开，C 的页面可直接 fetch 所有 `/api/*` 接口。稳定性验收：`python data/稳定性压测.py`（3 分钟全接口轮询报告）。
+
+**数据库（完整版线，已跑通）**：PostgreSQL 17.9 装于 B 机 `D:\PostgreSQL`（Windows 服务 postgresql-x64-17，开机自启），库 `turnout_twin`，账号 postgres / postgres，端口 5432。建表脚本 `db/01_建表与种子数据.sql`（TimescaleDB 可选，未装自动降级），入库脚本 `db/02_数据导入脚本.py`、`db/04_扩展数据入库.py`（四工况 8000 条）。当前库内：构件 9、测点 20、时序 8000、工单 32+、实时值 20。
 
 **UM 仿真数据接入（第 3-5 周）**：A 给 CSV 后，先 `python data/仿真数据转换脚本.py --file xx.csv` 转成契约 JSON（自动校验步长字段），再替换或入库；替换 data/data.json 前须群通知。
 

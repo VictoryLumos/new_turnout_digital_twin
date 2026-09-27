@@ -49,3 +49,9 @@ if __name__ == "__main__":
         asyncio.run(run(url))
     except KeyboardInterrupt:
         print("\n[监视] 已停止")
+    except OSError:
+        print("\n[失败] 连不上推送服务：ws://localhost:8765 没有响应")
+        print("  原因：WebSocket推送服务没在运行（电台没开播，收音机自然收不到）")
+        print("  解决：先双击同目录的 WebSocket演示.bat（或运行 WebSocket推送服务.py），")
+        print("        等黑窗口显示'已启动'后，再运行本脚本。")
+        sys.exit(1)
