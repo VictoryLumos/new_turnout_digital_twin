@@ -45,7 +45,7 @@ from datetime import datetime, timedelta, timezone
 import psycopg2
 from psycopg2.extras import execute_values
 from psycopg2.pool import ThreadedConnectionPool
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -118,6 +118,23 @@ def tables_ok(*names):
         return all(q("SELECT to_regclass(%s) IS NOT NULL", (n,))[0][0] for n in names)
     except psycopg2.Error:
         return False
+
+
+def wants_html(request: Request):
+    """浏览器直开（Accept 含 text/html）返回网页版；程序 fetch/脚本仍拿 JSON"""
+    return "text/html" in (request.headers.get("accept") or "")
+
+
+PAGE_HEAD = """<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="3">
+<title>道岔数字孪生 · {title}</title>
+<style>body{{font-family:"Microsoft YaHei";background:#0b1220;color:#e2e8f0;padding:24px;max-width:760px;margin:0 auto}}
+h1{{font-size:18px}} .sub{{color:#64748b;font-size:12px}}
+.c{{background:#111c30;border:1px solid #1e2f4d;border-left:3px solid #38bdf8;border-radius:12px;padding:16px 20px;margin:12px 0}}
+table{{border-collapse:collapse;font-size:14px;margin-top:6px}} td,th{{border-bottom:1px solid #1e2f4d;padding:5px 14px 5px 0;text-align:left}}
+th{{color:#64748b;font-weight:normal}} td{{font-variant-numeric:tabular-nums}}
+a{{color:#38bdf8}}</style></head><body>
+<h1>{title} <span class="sub">每3秒自动刷新 · <a href="/">← 返回状态板</a> · 程序调用本地址仍返回 JSON</span></h1>"""
 
 
 def latest_values():
@@ -553,7 +570,7 @@ def api_identify():
 
 
 @app.get("/api/stats")
-def api_stats():
+def api_stats(request: Request):
     """系统状态：表行数、查询延迟、回放/识别引擎状态（压测与答辩"运行状态"卡片）"""
     t0 = time.perf_counter()
     counts = {t: q(f"SELECT count(*) FROM {t}")[0][0] for t in
@@ -575,15 +592,36 @@ def api_stats():
     uptime = datetime.now() - START_AT
     with _play["lock"]:
         win_rows = len(_play["window"])
-    return {
+    up_str = f"{uptime.days * 24 + uptime.seconds // 3600}h" \
+             f"{uptime.seconds % 3600 // 60:02d}m{uptime.seconds % 60:02d}s"
+    payload = {
         "数据库": {"表行数": counts, "本轮5表查询延迟ms": latency, "v2对象": db_extra},
         "回放": {"当前工况": _play["condition"] or "无", "仿真时刻": _play["t"],
                  "识别窗口行数": win_rows},
         "服务": {"版本": "2.1", "启动时间": START_AT.strftime("%Y-%m-%d %H:%M:%S"),
-                 "已运行": f"{uptime.days * 24 + uptime.seconds // 3600}h"
-                          f"{uptime.seconds % 3600 // 60:02d}m{uptime.seconds % 60:02d}s",
+                 "已运行": up_str,
                  "识别引擎": "统计特征最近邻（8维特征 × 4工况同相位前缀参考）"},
     }
+    if wants_html(request):
+        names = {"component": "构件", "measurement_point": "测点", "timeseries_data": "时序数据",
+                 "work_order": "工单", "realtime_value": "实时值", "health_score": "健康度存档",
+                 "maintenance_log": "维修记录"}
+        rows_html = "".join(f"<tr><th>{names.get(t, t)}</th><td>{v}</td></tr>"
+                            for t, v in counts.items())
+        extra_html = (db_extra if isinstance(db_extra, str) else
+                      "；".join(f"{k} {v}" for k, v in db_extra.items()))
+        return HTMLResponse(PAGE_HEAD.format(title="系统状态") + f"""
+<div class="c"><b>数据库</b><table>{rows_html}</table>
+<div style="font-size:13px;color:#94a3b8;margin-top:8px">本轮查询延迟 {latency}ms · {extra_html}</div></div>
+<div class="c"><b>行为模型回放</b><div style="margin-top:6px;font-size:14px">
+当前工况：<b style="color:#38bdf8">{_play['condition'] or '无'}</b>
+· 仿真时刻 {_play['t'] if _play['t'] is not None else '--'}s · 识别窗口 {win_rows} 行</div></div>
+<div class="c"><b>服务</b><div style="margin-top:6px;font-size:14px;line-height:1.9">
+版本 {payload['服务']['版本']} · 启动 {payload['服务']['启动时间']} · 已运行 {up_str}<br>
+识别引擎：{payload['服务']['识别引擎']}<br>
+深度体检：命令行运行 <code>python db/06_数据库体检.py</code>（执行计划/索引/缓存命中率，9 项报告）</div></div>
+</body></html>""")
+    return payload
 
 
 ADVICE = {
@@ -597,7 +635,7 @@ ADVICE = {
 
 
 @app.get("/api/diagnosis")
-def api_diagnosis():
+def api_diagnosis(request: Request):
     """故障诊断（v2.1）：规则扣分项 + 工况自动识别 → 诊断结论 + 维修建议"""
     score, grade, issues = health_check(latest_values())
     ident = do_identify()
@@ -607,11 +645,34 @@ def api_diagnosis():
                  for i in issues]
     else:
         concl = "各测点正常，设备健康"
-    return {"健康度": score, "等级": grade,
-            "自动识别": {"识别工况": ident.get("识别工况"),
-                        "置信度": ident.get("置信度"),
-                        "特征依据": ident.get("特征依据")},
-            "诊断结论": concl}
+    payload = {"健康度": score, "等级": grade,
+               "自动识别": {"识别工况": ident.get("识别工况"),
+                           "置信度": ident.get("置信度"),
+                           "特征依据": ident.get("特征依据")},
+               "诊断结论": concl}
+    if wants_html(request):
+        color = {"优": "#22c55e", "良": "#eab308", "预警": "#f97316", "故障": "#ef4444"}[grade]
+        idn = ident.get("识别工况")
+        ident_html = (f'<b style="font-size:24px;color:{"#22c55e" if idn == "正常转换" else "#f97316"}">{idn}</b>'
+                      + (f' <span style="color:#64748b">· 置信度 {round(ident.get("置信度", 0) * 100)}%</span>'
+                         f'<div style="font-size:13px;color:#94a3b8;margin-top:5px">{ident.get("特征依据")}</div>'
+                         if idn else
+                         f'<span style="color:#64748b;font-size:14px">（{ident.get("说明", "无回放数据")}）</span>'))
+        if isinstance(concl, str):
+            body_html = f'<div class="c" style="color:#22c55e;font-size:16px">✓ {concl}</div>'
+        else:
+            body_html = "".join(
+                f'<div class="c"><b style="color:#f87171">⚠ {c["问题"]}</b>'
+                f'<span style="color:#64748b;font-size:13px">（关联测点 {c["关联测点"]}）</span>'
+                f'<div style="font-size:14px;line-height:1.8;margin-top:6px">🔧 {c["维修建议"]}</div></div>'
+                for c in concl)
+        return HTMLResponse(PAGE_HEAD.format(title="故障诊断") + f"""
+<div class="c">健康度 <span style="font-size:36px;font-weight:bold;color:{color}">{score:.0f}</span>
+<span style="color:{color};font-weight:bold;font-size:18px">{grade}</span>
+<span style="color:#475569;font-size:12px">（规则扣分制 + 稳态门）</span></div>
+<div class="c"><b>工况自动识别</b><div style="margin-top:6px">{ident_html}</div></div>
+{body_html}</body></html>""")
+    return payload
 
 
 @app.post("/api/repair/{work_order_id}")
