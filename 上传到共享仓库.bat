@@ -15,7 +15,7 @@ if errorlevel 1 (
 if not exist .git (
     echo [首次] 初始化本地仓库...
     git init >nul
-    git branch -M master
+    git branch -M main
 )
 git remote get-url origin >nul 2>nul
 if errorlevel 1 (
@@ -31,7 +31,7 @@ git add .
 git commit -m "更新 %date% %time%" >nul 2>nul
 if errorlevel 1 echo        （本次没有新改动，直接推送）
 echo [2/2] 推送...
-git push -u origin master
+git push -u origin main
 if errorlevel 1 (
     echo.
     echo [推送失败] 常见原因：地址粘错 / 首次推送要登录 / 没有仓库权限

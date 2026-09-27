@@ -57,4 +57,4 @@ C 连接 `ws://localhost:8765`（跨机用 B 的 IPv4）；失败则退回本地
 
 模型等大文件存放于网盘（待建）：**链接：（待填，建好后置顶群公告并更新此处）**
 
-Gitee 仓库地址（待建）：**（待填）**
+共享代码仓库（GitHub，2026-09-27 起）：**https://github.com/VictoryLumos/new_turnout_digital_twin**（组长建库，三人协作；日常同步双击根目录 `上传到共享仓库.bat`）
