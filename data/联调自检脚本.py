@@ -104,8 +104,11 @@ check("服务API 端口 8000 状态", True,
 # ---- 4) 数据库 ----
 try:
     import psycopg2
-    conn = psycopg2.connect(host="localhost", port=5432, user="postgres",
-                            password="postgres", dbname="turnout_twin",
+    conn = psycopg2.connect(host=os.environ.get("PGHOST", "localhost"),
+                            port=int(os.environ.get("PGPORT", "5432")),
+                            user=os.environ.get("PGUSER", "postgres"),
+                            password=os.environ.get("PGPASSWORD", "postgres"),
+                            dbname=os.environ.get("PGDATABASE", "turnout_twin"),
                             connect_timeout=5)
     cur = conn.cursor()
     counts = {}

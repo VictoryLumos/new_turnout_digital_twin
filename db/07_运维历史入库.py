@@ -30,8 +30,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "data"))
 import 生成扩展数据集 as gen          # 复用四工况物理曲线模型
 
-DB = dict(host="localhost", port=5432, user="postgres",
-          password="postgres", dbname="turnout_twin")
+DB = dict(host=os.environ.get("PGHOST", "localhost"),
+          port=int(os.environ.get("PGPORT", "5432")),
+          user=os.environ.get("PGUSER", "postgres"),
+          password=os.environ.get("PGPASSWORD", "postgres"),
+          dbname=os.environ.get("PGDATABASE", "turnout_twin"))
 DAY = datetime(2026, 9, 26, 8, 0, 0, tzinfo=timezone(timedelta(hours=8)))  # 08:00 起
 
 FIELD_TO_POINT = {

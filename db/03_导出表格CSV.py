@@ -22,10 +22,28 @@ import psycopg2
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(HERE, "..", "data", "导出数据")
 
-DB = dict(host="localhost", port=5432, user="postgres",
-          password="postgres", dbname="turnout_twin")
+DB = dict(host=os.environ.get("PGHOST", "localhost"),
+          port=int(os.environ.get("PGPORT", "5432")),
+          user=os.environ.get("PGUSER", "postgres"),
+          password=os.environ.get("PGPASSWORD", "postgres"),
+          dbname=os.environ.get("PGDATABASE", "turnout_twin"))
 
-PG_DUMP = r"D:\PostgreSQL\bin\pg_dump.exe"
+def _find_pg_dump():
+    """换机可移植：PATH → 常见安装目录 → 本机 D 盘自定义路径"""
+    import glob as _glob
+    import shutil as _sh
+    on_path = _sh.which("pg_dump")
+    if on_path:
+        return on_path
+    for pat in (r"C:\Program Files\PostgreSQL\*\bin\pg_dump.exe",
+                r"D:\PostgreSQL\bin\pg_dump.exe"):
+        hits = _glob.glob(pat)
+        if hits:
+            return hits[0]
+    return None
+
+
+PG_DUMP = _find_pg_dump()
 
 # 表名 → (导出文件名, 排序字段)；v2 新表存在才导（旧库不报错）
 TABLES = {

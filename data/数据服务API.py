@@ -53,8 +53,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DS_DIR = os.path.join(HERE, "扩展数据集v2")
 CONDITIONS = ["正常转换", "卡阻", "密贴不良", "锁闭失败"]
 
-DB = dict(host="localhost", port=5432, user="postgres",
-          password="postgres", dbname="turnout_twin")
+DB = dict(host=os.environ.get("PGHOST", "localhost"),
+          port=int(os.environ.get("PGPORT", "5432")),
+          user=os.environ.get("PGUSER", "postgres"),
+          password=os.environ.get("PGPASSWORD", "postgres"),
+          dbname=os.environ.get("PGDATABASE", "turnout_twin"))
 BASE_TS = datetime(2026, 9, 26, 0, 0, 0, tzinfo=timezone(timedelta(hours=8)))
 
 # 数据字段 → 测点编码（《完整版》编码映射表全量 20 项）

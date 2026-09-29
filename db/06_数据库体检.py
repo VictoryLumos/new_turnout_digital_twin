@@ -13,12 +13,16 @@ r"""
 用法：python 06_数据库体检.py        # 只读不写，随时可跑
 """
 import re
+import os
 import sys
 
 import psycopg2
 
-DB = dict(host="localhost", port=5432, user="postgres",
-          password="postgres", dbname="turnout_twin", connect_timeout=5)
+DB = dict(host=os.environ.get("PGHOST", "localhost"),
+          port=int(os.environ.get("PGPORT", "5432")),
+          user=os.environ.get("PGUSER", "postgres"),
+          password=os.environ.get("PGPASSWORD", "postgres"),
+          dbname=os.environ.get("PGDATABASE", "turnout_twin"), connect_timeout=5)
 
 results = []
 

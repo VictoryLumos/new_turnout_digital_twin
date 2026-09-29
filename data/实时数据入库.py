@@ -35,8 +35,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(HERE, "data.json")
 STEP = 0.1
 
-DB = dict(host="localhost", port=5432, user="postgres",
-          password="postgres", dbname="turnout_twin")
+DB = dict(host=os.environ.get("PGHOST", "localhost"),
+          port=int(os.environ.get("PGPORT", "5432")),
+          user=os.environ.get("PGUSER", "postgres"),
+          password=os.environ.get("PGPASSWORD", "postgres"),
+          dbname=os.environ.get("PGDATABASE", "turnout_twin"))
 
 # 数据字段 → 测点编码（与 02_数据导入脚本.py 保持一致）
 FIELD_TO_POINT = {
