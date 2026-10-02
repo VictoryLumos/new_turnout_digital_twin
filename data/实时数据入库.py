@@ -26,17 +26,16 @@ r"""
 import json
 import os
 import sys
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 
-import psycopg2
-
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from 管道公共 import DB, db_connect  # 统一配置+失败重试
+
 DATA_FILE = os.path.join(HERE, "data.json")
 STEP = 0.1
-
-DB = dict(host="localhost", port=5432, user="postgres",
-          password="postgres", dbname="turnout_twin")
 
 # 数据字段 → 测点编码（与 02_数据导入脚本.py 保持一致）
 FIELD_TO_POINT = {
@@ -55,7 +54,7 @@ def main():
     except FileNotFoundError:
         sys.exit(f"[失败] 找不到 {DATA_FILE}")
 
-    conn = psycopg2.connect(**DB)
+    conn = db_connect()   # 失败自动重试（管道公共）
 
     # 告警阈值从测点表读，与前端/监视器同一判据
     with conn:

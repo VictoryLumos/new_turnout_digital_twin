@@ -67,6 +67,7 @@ BEGIN
     IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
         PERFORM create_hypertable('timeseries_data', 'ts',
                                   chunk_time_interval => INTERVAL '1 day',
+                                  migrate_data => TRUE,
                                   if_not_exists => TRUE);
         RAISE NOTICE 'timeseries_data 已转为 hypertable';
     ELSE

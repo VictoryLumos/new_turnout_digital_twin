@@ -1,16 +1,13 @@
 # -*- coding: utf-8 -*-
-"""
-道岔数字孪生 —— 联调自检脚本（B：数据管道线）
+r"""
+道岔数字孪生 —— 联调自检脚本 v2（B：数据管道线，整改版）
 
-作用：
-    每周联调前跑一遍，10 秒确认 B 侧整条管道是否健康：
-      1) data.json 契约校验（字段 / 条数 / 步长 / 超限演示段）
-      2) WebSocket 推送就绪（脚本在 + websockets 库已装）
-      3) 数据库 turnout_twin 连通 + 五张表行数（含实时值表）+ 超阈值记录
-    全部 [OK] = B 这边没问题；联调出问题就去查 C 的页面或 A 的模型/数据。
-
-用法：
-    python 联调自检脚本.py
+一键体检 B 侧管道（对应组长整改令的验收前置）：
+  1) data.json 契约（80条/0.1s/三字段）与超限演示段
+  2) 五工况数据集文件齐全（含告警演示 120 行）
+  3) WebSocket 推送就绪（脚本+库+端口3002状态）
+  4) 数据库五张表行数与超阈值记录
+用法：python 联调自检脚本.py
 """
 import json
 import os
@@ -18,8 +15,15 @@ import socket
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from 管道公共 import WS_PORT, db_session  # noqa: E402
+
 DATA_FILE = os.path.join(HERE, "data.json")
 WS_SCRIPT = os.path.join(HERE, "WebSocket推送服务.py")
+DS_DIR = os.path.join(HERE, "扩展数据集v2")
+DS_EXPECT = {"工况_正常转换.json": 100, "工况_卡阻.json": 100,
+             "工况_密贴不良.json": 100, "工况_锁闭失败.json": 100,
+             "工况_告警演示.json": 120}
 
 results = []
 
@@ -30,7 +34,7 @@ def check(name, ok, detail=""):
 
 
 print("=" * 46)
-print("道岔数字孪生 · B 侧管道自检")
+print("道岔数字孪生 · B 侧管道自检 v2（整改版）")
 print("=" * 46)
 
 # ---- 1) data.json 契约 ----
@@ -43,20 +47,29 @@ try:
     ok = (n == 80 and fields == ["pointRailDisp1", "switchRailDisp1", "time"]
           and steps == {0.1})
     check("data.json 契约（80条/0.1s/三字段）", ok,
-          f"{n}条，time {rows[0]['time']}~{rows[-1]['time']}s" if ok
-          else f"异常：{n}条，字段{fields}，步长{steps}")
+          f"{n}条" if ok else f"异常：{n}条 {fields} {steps}")
     over = sum(r["switchRailDisp1"] > 150 for r in rows)
-    check("尖轨超限演示段（>150mm）", over > 0, f"{over} 条超限，用于演示变红")
-except Exception as e:
+    check("尖轨超限演示段（>150mm）", over > 0, f"{over} 条")
+except Exception as e:  # noqa: BLE001
     check("data.json 读取", False, str(e))
 
-# ---- 2) WebSocket 推送就绪 ----
+# ---- 2) 五工况数据集 ----
+for fname, expect in DS_EXPECT.items():
+    p = os.path.join(DS_DIR, fname)
+    try:
+        with open(p, encoding="utf-8") as f:
+            n = len(json.load(f))
+        check(f"数据集 {fname}", n == expect, f"{n} 行")
+    except Exception as e:  # noqa: BLE001
+        check(f"数据集 {fname}", False, str(e))
+
+# ---- 3) WebSocket 就绪 ----
 check("WebSocket推送服务.py 存在", os.path.exists(WS_SCRIPT))
 try:
     import websockets
     check("websockets 库已安装", True, websockets.__version__)
 except ImportError:
-    check("websockets 库已安装", False, "先执行 pip install websockets")
+    check("websockets 库已安装", False, "pip install websockets")
 
 
 def _port_listening(port):
@@ -65,44 +78,40 @@ def _port_listening(port):
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
-check("WebSocket 端口 8765 状态", True,
-      "服务已在运行，C 可直连 ws://localhost:8765" if _port_listening(8765)
-      else "未运行（正常；与 C 联调时启动 WebSocket推送服务.py 即可）")
+check(f"WebSocket 端口 {WS_PORT} 状态", True,
+      f"服务已在运行（C 连 ws://本机IP:{WS_PORT}）" if _port_listening(WS_PORT)
+      else f"未运行（正常；联调时启动 WebSocket推送服务.py 即可）")
 
-# ---- 3) 数据库 ----
+# ---- 4) 数据库（统一配置 + 重试） ----
 try:
-    import psycopg2
-    conn = psycopg2.connect(host="localhost", port=5432, user="postgres",
-                            password="postgres", dbname="turnout_twin",
-                            connect_timeout=5)
-    cur = conn.cursor()
-    counts = {}
-    for t in ("component", "measurement_point", "timeseries_data",
-              "work_order", "realtime_value"):
-        cur.execute(f"SELECT count(*) FROM {t}")
-        counts[t] = cur.fetchone()[0]
-    cur.execute("SELECT count(*) FROM timeseries_data d "
-                "JOIN measurement_point p USING(point_code) "
-                "WHERE d.value > p.alarm_threshold")
-    alarms = cur.fetchone()[0]
-    conn.close()
+    with db_session() as cur:
+        cur.execute("SELECT count(*) FROM component")
+        n_comp = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM measurement_point")
+        n_point = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM realtime_value")
+        n_rt = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM timeseries_data")
+        n_ts = cur.fetchone()[0]
+        cur.execute("SELECT count(DISTINCT batch) FROM timeseries_data")
+        n_batch = cur.fetchone()[0]
+        cur.execute("SELECT count(*) FROM timeseries_data d "
+                    "JOIN measurement_point p ON p.point_code = d.point_code "
+                    "WHERE d.value > p.alarm_threshold")
+        n_alarm = cur.fetchone()[0]
     check("数据库 turnout_twin 连接", True)
-    expect = {"component": 9, "measurement_point": 20,
-              "timeseries_data": 160, "work_order": 20, "realtime_value": 2}
-    check("五张表行数（9/20/160/20/2）", counts == expect,
-          " ".join(f"{k}={v}" for k, v in counts.items()))
-    check("库内超阈值记录", alarms > 0, f"{alarms} 条")
-except Exception as e:
-    hint = ""
-    text = str(e).lower()
-    if any(k in text for k in ("connect", "refused", "timeout", "拒绝", "无法访问")):
-        hint = "（数据库服务没起来？管理员运行：net start postgresql-x64-17）"
-    check("数据库 turnout_twin 连接", False, str(e) + hint)
+    check("表行数（构件9/测点20/实时2，时序≥160）",
+          n_comp == 9 and n_point == 20 and n_rt == 2 and n_ts >= 160,
+          f"构件={n_comp} 测点={n_point} 实时={n_rt} 时序={n_ts} 批次={n_batch}")
+    check("库内超阈值记录(跨批累计)", n_alarm >= 29, f"{n_alarm} 条")
+except Exception as e:  # noqa: BLE001
+    hint = "服务没起来？管理员运行：net start postgresql-x64-17"
+    check("数据库 turnout_twin 连接", False, f"{e}（{hint}）" if "connect" in str(e).lower() else str(e))
 
 # ---- 汇总 ----
 ng = results.count(False)
 print("-" * 46)
 print(f"自检完成：{len(results)} 项，通过 {len(results) - ng} 项"
       + ("" if ng == 0 else f"，未通过 {ng} 项"))
-print("结论：" + ("B 侧管道健康，可以联调" if ng == 0 else "先解决上面 [NG] 项，再开始联调"))
+print("结论：" + ("B 侧管道健康，可以联调" if ng == 0 else "先解决 [NG] 项再联调"))
 sys.exit(0 if ng == 0 else 1)

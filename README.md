@@ -18,13 +18,16 @@
 | 项 | 约定 |
 |---|---|
 | 文件 | data/data.json（文件名定死） |
-| 字段 | time（秒）、switchRailDisp1（mm）、pointRailDisp1（mm） |
-| 步长/条数 | 0.1 秒 × 80 条（8 秒），循环播放 |
+| 字段 | time（秒）+ 五路位移（switchRailDisp1/2/3、pointRailDisp1/2，mm）；基础 data.json 仅含两路，三路由推送适配层模拟生成并标注 |
+| 步长/条数 | 0.1 秒；data.json 80 条/8 秒循环；扩展工况 100~120 条 |
 | 坐标换算 | 毫米 × 0.001 = 米 |
 | 告警阈值 | 尖轨 > 150mm 变红；心轨 > 100mm 变红（前端判定） |
-| 模型节点 | 尖轨 SwitchRail、心轨 PointRail，沿模型 X 轴移动（以 A 导出确认为准） |
+| 模型节点 | 尖轨 SwitchRail、心轨 PointRail；**iModel 横移方向为 Y 轴**（旧文档"沿X轴"说法作废，2026-10-02 组长确认） |
 
 ## 快速上手
+
+**依赖安装**：`pip install -r requirements.txt`（websockets/fastapi/uvicorn/psycopg2-binary）
+**接口与整改说明**：见 `docs/B线交付说明_v2.0.md`（契约 v2、验收材料清单）
 
 **B 侧一键自检**：`python data/联调自检脚本.py`——数据契约 / 推送就绪 / 数据库连通一次查完，全 [OK] 即可联调。
 
@@ -35,10 +38,10 @@
 **可选 WebSocket 实时推送**：
 
 ```
-python data/WebSocket推送服务.py        # B 机上运行，端口 8765
+python data/WebSocket推送服务.py        # B 机上运行，端口 3002（统一）
 ```
 
-C 连接 `ws://localhost:8765`（跨机用 B 的 IPv4）；失败则退回本地 JSON，不阻塞交付。
+C 连接 `ws://localhost:3002`（跨机用 B 的 IPv4）；消息含 seq/round/simTime/sendTs/timeStr 元信息与 simFields 模拟标注；失败退回本地 JSON。
 
 **数据库（完整版线，已跑通）**：PostgreSQL 17.9 装于 B 机 `D:\PostgreSQL`（Windows 服务 postgresql-x64-17，开机自启），库 `turnout_twin`，账号 postgres / postgres，端口 5432。建表脚本 `db/01_建表与种子数据.sql`（TimescaleDB 可选，未装自动降级），入库脚本 `db/02_数据导入脚本.py`。当前库内：构件 9、测点 20、时序 160、工单 20。
 

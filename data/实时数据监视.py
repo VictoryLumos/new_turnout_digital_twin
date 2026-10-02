@@ -9,7 +9,7 @@
 
 用法（开两个窗口）：
     窗口1:  python WebSocket推送服务.py
-    窗口2:  python 实时数据监视.py                # 默认连 ws://localhost:8765
+    窗口2:  python 实时数据监视.py                # 默认连 ws://localhost:3002
             python 实时数据监视.py ws://IP:8765   # 指定地址
 
     Ctrl+C 停止。
@@ -44,13 +44,13 @@ async def run(url):
 
 
 if __name__ == "__main__":
-    url = sys.argv[1] if len(sys.argv) > 1 else "ws://localhost:8765"
+    url = sys.argv[1] if len(sys.argv) > 1 else "ws://localhost:3002"
     try:
         asyncio.run(run(url))
     except KeyboardInterrupt:
         print("\n[监视] 已停止")
     except OSError:
-        print("\n[失败] 连不上推送服务：ws://localhost:8765 没有响应")
+        print("\n[失败] 连不上推送服务：ws://localhost:3002 没有响应")
         print("  原因：WebSocket推送服务没在运行（电台没开播，收音机自然收不到）")
         print("  解决：先双击同目录的 WebSocket演示.bat（或运行 WebSocket推送服务.py），")
         print("        等黑窗口显示'已启动'后，再运行本脚本。")

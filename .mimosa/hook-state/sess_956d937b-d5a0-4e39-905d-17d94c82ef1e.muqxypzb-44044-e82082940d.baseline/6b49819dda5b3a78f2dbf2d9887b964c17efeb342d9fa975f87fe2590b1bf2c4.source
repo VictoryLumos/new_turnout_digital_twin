@@ -300,11 +300,8 @@ def api_history(point_code: str, start: str = None, end: str = None,
     if batch:
         cond.append("batch = %s"); params.append(batch)
     params.append(max(1, min(limit, 5000)))
-    # WHERE 片段为固定字面量集合，筛选值全部经 %s 参数绑定
-    sql_txt = "SELECT ts, value, source, batch FROM timeseries_data WHERE "
-    sql_txt += " AND ".join(cond)
-    sql_txt += " ORDER BY ts DESC LIMIT %s"
-    rows = q(sql_txt, params)
+    rows = q("SELECT ts, value, source, batch FROM timeseries_data WHERE "
+             " AND ".join(cond) + " ORDER BY ts DESC LIMIT %s", params)
     data = [{"时刻": t.strftime("%H:%M:%S.%f")[:-4], "值": float(v),
              "来源": s, "批次": b or "(未标注)"} for t, v, s, b in reversed(rows)]
     if format == "csv":

@@ -154,113 +154,12 @@ def build_row(cond, t, prev_disp):
 
 
 def build_condition(cond):
-    if cond == "告警演示":
-        return build_alarm_demo()
     rows, prev = [], 0.0
     for t in TS:
         row, disp = build_row(cond, t, prev)
         rows.append(row)
         prev = disp
     return rows
-
-
-def build_alarm_demo():
-    """告警演示工况（组长整改令第2条）：正常→尖轨单路超限→恢复→
-    心轨单路超限→恢复→双路同时超限→分别恢复，含 150/150.1/100/100.1
-    边界帧（等于阈值不告警，超过才告警）。12s，120 行。"""
-    TH_SW, TH_PR = 150.0, 100.0   # 与《统一标准》阈值一致
-
-    def interp(t, segs):
-        for (t0, v0, t1, v1) in segs:
-            if t0 <= t <= t1:
-                k = 0.0 if t1 == t0 else (t - t0) / (t1 - t0)
-                return round(v0 + (v1 - v0) * k, 2)
-        return segs[-1][3]
-
-    SW = [  # 分段线性：精确覆盖 150.0 / 150.1 边界帧
-        (0.0, 0.0, 1.9, 120.0),            # 正常段
-        (2.0, TH_SW, 2.1, TH_SW + 0.1),    # 150.0 不告警 → 150.1 首帧告警
-        (2.1, TH_SW + 0.1, 3.0, 156.0),    # 尖轨单路超限
-        (3.0, 156.0, 3.9, TH_SW + 0.1),
-        (4.0, TH_SW + 0.1, 4.9, 120.0),    # 尖轨恢复
-        (7.5, TH_SW, 7.6, TH_SW + 0.1),    # 双路同时超限（同帧起步）
-        (7.6, TH_SW + 0.1, 8.4, 160.0),
-        (8.4, 160.0, 8.9, TH_SW + 0.1),
-        (9.0, TH_SW + 0.1, 9.4, 120.0),    # 分别恢复：尖轨先恢复
-    ]
-    PR = [
-        (0.0, 0.0, 1.9, 80.0),
-        (5.0, TH_PR, 5.1, TH_PR + 0.1),    # 100.0 不告警 → 100.1 首帧告警
-        (5.1, TH_PR + 0.1, 6.0, 108.0),    # 心轨单路超限
-        (6.0, 108.0, 6.4, TH_PR + 0.1),
-        (6.5, TH_PR + 0.1, 7.4, 80.0),     # 心轨恢复
-        (7.5, TH_PR, 7.6, TH_PR + 0.1),    # 双路同时超限
-        (7.6, TH_PR + 0.1, 8.4, 112.0),
-        (8.4, 112.0, 9.4, TH_PR + 0.1),
-        (9.5, TH_PR + 0.1, 9.9, 80.0),     # 分别恢复：心轨后恢复
-    ]
-
-    rows = []
-    for i in range(120):
-        t = round(i * STEP, 1)
-        sw, pr = interp(t, SW), interp(t, PR)
-        settled = t >= 1.9
-        rows.append({
-            "time": t,
-            "switchRailDisp1": sw,
-            "switchRailDisp2": round(max(0.0, sw * 0.98 - 2), 2),
-            "switchRailDisp3": round(max(0.0, sw * 0.96 - 4), 2),
-            "pointRailDisp1": pr,
-            "pointRailDisp2": round(max(0.0, pr * 0.97 - 2), 2),
-            "switchRailForce1": round(320 + noise(40), 1),
-            "switchRailForce2": round(300 + noise(40), 1),
-            "switchRailForce3": round(280 + noise(40), 1),
-            "pointRailForce1": round(230 + noise(30), 1),
-            "pointRailForce2": round(210 + noise(30), 1),
-            "switchMachineCurrent": 0.5 if settled else 3.0,
-            "switchMachinePower": round(220 * (0.5 if settled else 3.0), 1),
-            "lockStatus": 1 if settled else 0,
-            "closeStatus": 1 if settled else 0,
-            "frogVibration": round(0.6 + abs(noise(0.3)), 2),
-            "frogWear": round(0.10 + 0.001 * t, 3),
-            "wheelRailForceLateral": round(abs(noise(1.5)), 2),
-            "wheelRailForceVertical": round(abs(noise(3.0)), 2),
-            "guardRailDisp": round(abs(0.3 + noise(0.25)), 2),
-            "railTemperature": round(23.4 + 0.06 * smoothstep(t / 6.0) + noise(0.01), 2),
-        })
-    return rows
-
-
-def check_alarm_demo(rows):
-    """告警演示专项校验：阶段状态序列 + 四个边界帧语义。"""
-    at = {r["time"]: r for r in rows}
-    a_sw = lambda t: at[t]["switchRailDisp1"] > 150.0
-    a_pr = lambda t: at[t]["pointRailDisp1"] > 100.0
-    phases = [
-        (1.0, False, False, "正常"),
-        (2.0, False, False, "尖轨边界150.0不告警"),
-        (2.1, True, False, "尖轨150.1首帧告警(单路)"),
-        (3.5, True, False, "尖轨单路持续"),
-        (4.5, False, False, "尖轨恢复"),
-        (5.0, False, False, "心轨边界100.0不告警"),
-        (5.1, False, True, "心轨100.1首帧告警(单路)"),
-        (6.0, False, True, "心轨单路持续"),
-        (7.0, False, False, "心轨恢复"),
-        (7.5, False, False, "双路边界帧均不告警"),
-        (7.6, True, True, "双路同时告警"),
-        (8.5, True, True, "双路持续"),
-        (9.2, False, True, "分别恢复:尖轨已恢复,心轨仍告警"),
-        (9.5, False, True, "心轨恢复首帧(100.1仍告警)"),
-        (9.7, False, False, "心轨恢复完成"),
-        (10.5, False, False, "全恢复正常"),
-    ]
-    for t, esw, epr, name in phases:
-        assert a_sw(t) == esw and a_pr(t) == epr, f"阶段[{name}] t={t} 状态不符"
-    for v, expect in [(150.0, False), (150.1, True)]:
-        assert (v > 150.0) == expect, f"尖轨边界语义错误: {v}"
-    for v, expect in [(100.0, False), (100.1, True)]:
-        assert (v > 100.0) == expect, f"心轨边界语义错误: {v}"
-    print("  告警演示专项：16个阶段状态通过；边界150/150.1/100/100.1语义通过")
 
 
 def validate(all_data):
@@ -285,16 +184,15 @@ def validate(all_data):
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
-    conds = ["正常转换", "卡阻", "密贴不良", "锁闭失败", "告警演示"]
+    conds = ["正常转换", "卡阻", "密贴不良", "锁闭失败"]
     all_data = {c: build_condition(c) for c in conds}
     validate(all_data)
-    check_alarm_demo(all_data["告警演示"])
     for cond, rows in all_data.items():
         path = os.path.join(OUT_DIR, f"工况_{cond}.json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(rows, f, ensure_ascii=False, indent=1)
         print(f"  已写出 {os.path.relpath(path, HERE)}")
-    print("[完成] 五工况数据集生成（含告警演示）。入库/推送扩展待群确认契约 v2 后进行。")
+    print("[完成] 四工况数据集生成。入库/推送扩展待群确认契约 v2 后进行。")
 
 
 if __name__ == "__main__":
