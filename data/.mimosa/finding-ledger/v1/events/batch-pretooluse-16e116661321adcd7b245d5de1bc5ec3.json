@@ -1,6 +1,6 @@
 {
   "schemaVersion": "mimosa-finding-ledger-batch/v1",
-  "batchId": "pretooluse-c562f5cd1704da01ee70866d17e144a7",
+  "batchId": "pretooluse-16e116661321adcd7b245d5de1bc5ec3",
   "runId": null,
   "runStatus": "completed",
   "coverage": {
@@ -18,31 +18,31 @@
   "reportRef": null,
   "events": [
     {
-      "eventId": "hook-158cf901e3604f88a7a36446c41a81f7",
-      "findingId": "mimosa-3f5108683f4368f56fcf713d",
+      "eventId": "hook-d9ed6270f7559bc8c36a3cb97f389b10",
+      "findingId": "mimosa-9b5372718b6602f8631f8993",
       "type": "finding_blocked",
-      "at": "2026-10-02T12:15:39.054Z",
+      "at": "2026-10-02T12:48:11.087Z",
       "identity": {
-        "projectRelativeFile": "生成扩展数据集.py",
+        "projectRelativeFile": "仿真数据转换脚本.py",
         "ruleId": "security",
-        "codeEvidenceHash": "e99bc5f99d5ca6807c2ce155e3a13779ad170c7c49e0290075fcb6cb27258808",
+        "codeEvidenceHash": "d0260a2be2f64063ca8118e4fb50aeda56ca2cc3908af877379e657567b09443",
         "confidence": "stable"
       },
       "scope": "direct",
-      "line": 193,
-      "endLine": 193,
+      "line": 8,
+      "endLine": 8,
       "reasonCode": "deny",
       "reportedToAgent": true,
       "evidence": {
         "kind": "source",
         "boundary": "candidate",
         "producer": "deterministic",
-        "evidenceHash": "e99bc5f99d5ca6807c2ce155e3a13779ad170c7c49e0290075fcb6cb27258808"
+        "evidenceHash": "d0260a2be2f64063ca8118e4fb50aeda56ca2cc3908af877379e657567b09443"
       },
       "sequence": 0
     }
   ],
   "observedFindingIds": [],
   "verifiedFiles": [],
-  "recordedAt": "2026-10-02T12:15:39.350Z"
+  "recordedAt": "2026-10-02T12:48:11.381Z"
 }

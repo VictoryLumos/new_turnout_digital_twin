@@ -20,7 +20,7 @@ from datetime import date
 import psycopg2
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT_DIR = os.path.join(HERE, "..", "data", "导出数据")
+OUT_DIR = os.path.join(os.path.dirname(HERE), "data", "导出数据")  # 上级=data，不使用字面量..
 
 DB = dict(host="localhost", port=5432, user="postgres",
           password="postgres", dbname="turnout_twin")

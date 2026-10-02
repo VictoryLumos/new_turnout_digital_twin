@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "posttooluse-3c14fbbfa69967935323a25368dcc3e8",
+  "runId": null,
+  "runStatus": "completed",
+  "coverage": {
+    "status": "complete",
+    "reasons": []
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "PostToolUse"
+  },
+  "revision": null,
+  "diffHash": null,
+  "rulesVersion": null,
+  "sessionHash": "ca3581f3606134acd3625bc84ff3fa4ece4d79c2c68092d270ac545c8675bbbf",
+  "reportRef": null,
+  "events": [
+    {
+      "eventId": "hook-2c7b183fbb344b2bb50c04fc27042389",
+      "findingId": "mimosa-9b5372718b6602f8631f8993",
+      "type": "static_fix_verified",
+      "at": "2026-10-02T12:48:38.110Z",
+      "identity": {
+        "projectRelativeFile": "仿真数据转换脚本.py",
+        "ruleId": "security",
+        "codeEvidenceHash": "d0260a2be2f64063ca8118e4fb50aeda56ca2cc3908af877379e657567b09443",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 8,
+      "endLine": 8,
+      "reasonCode": "static_rescan_passed",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "evidenceHash": "d0260a2be2f64063ca8118e4fb50aeda56ca2cc3908af877379e657567b09443"
+      },
+      "sequence": 0
+    }
+  ],
+  "observedFindingIds": [],
+  "verifiedFiles": [],
+  "recordedAt": "2026-10-02T12:48:38.423Z"
+}
