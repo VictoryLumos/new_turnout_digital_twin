@@ -1,23 +1,30 @@
 # -*- coding: utf-8 -*-
 r"""
-道岔数字孪生 —— WebSocket 数据推送服务 v2（B：数据管道线，整改版）
+道岔数字孪生 —— WebSocket 数据推送服务 v3（B：数据管道线，整改第二轮）
 
-对应组长整改令第 1/3/4/5 条：
-  · 启动即校验：缺字段/字符串/null/NaN/Infinity/乱序 拒绝启动并定位到 行号+字段
-  · 消息带元信息：seq(全局序号) round(轮次) simTime(仿真秒) sendTs(发送时刻毫秒)
-    timeStr(时间字符串) —— 区分仿真时间与发送时间，循环归零不会被前端判旧
+对应组长第二轮反馈第1/2条与《接口契约》（github_docs/接口契约.md）：
+  · time 改为【UTC ISO 8601 字符串】（如 2026-10-02T08:00:00.123Z）：
+    iTwin 页面要求 Date.parse 可解析、必须当前时间（与浏览器时差>10s 拒收）、
+    单调不减——因此取真实发送时刻；仿真秒保留在 simTime，不再占用 time
+  · 五路位移校验升级：必填两路之外，switchRailDisp2/3、pointRailDisp2
+    属于"出现即校验"——已提供的 NaN/Infinity/字符串/null 一律拒绝启动，
+    绝不把非法值替换成模拟值；仅当字段完全缺失时才由适配层模拟生成
+  · 缺失三路的模拟依据：按 A 确认的设计动程等比例换算
+    （118/160、75/160、55.5/100.6，编码与映射表.json 第2页8.2/8.5），
+    属演示用近似，在 simFields 中显式标注，非设计值或实测值
+  · 端口改 3003：3002 已被 C 的 iTwin 本地服务占用（接口契约原文），
+    本服务同机不再抢 3002；C 直连 ws://<B机IP>:3003 或由 C 侧转发
+  · 消息元信息：seq(全局序号) round(轮次) simTime(仿真秒)
+    sendTs(发送时刻毫秒) timeStr(本地时间字符串) dataSource(SIMULATED)
   · 循环边界：按绝对时刻对齐，轮与轮之间保证 ≥ 步长，不会瞬发两帧
-  · 五路位移适配：数据缺 switchRailDisp2/3、pointRailDisp2 时按牵引点
-    模型生成，并在消息 simFields 中【显式标注为模拟】，绝不悄悄补零
-  · 端口统一为 3002（管道配置.json），--port 可临时覆盖（如旧联调 8765）
   · 断线：服务端支持客户端随时断开重连；客户端自动重连由 C 实现，
-    B 的参考实现见 WebSocket测试页面.html（2 秒自动重连）
+    B 的参考实现见 WebSocket测试页面.html
 
 用法：
-    python WebSocket推送服务.py                     # 默认 data.json，端口3002
+    python WebSocket推送服务.py                     # 默认 data.json，端口3003
     python WebSocket推送服务.py --file 扩展数据集v2/工况_告警演示.json
-    python WebSocket推送服务.py --port 8765         # 临时旧端口
-C 端连接：ws://<B的IP>:3002
+    python WebSocket推送服务.py --port 8765         # 临时其他端口
+C 端连接：ws://<B的IP>:3003（任意路径均可，含 /telemetry）
 """
 import argparse
 import asyncio
@@ -25,17 +32,22 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from 管道公共 import (CONFIG, STEP, WS_PORT, validate_rows,  # noqa: E402
-                     format_errors)
+                     format_errors, now_iso_utc, TZ8)
 
 DATA_FILE = os.path.join(HERE, "data.json")
 BASE_REQUIRED = ["time", "switchRailDisp1", "pointRailDisp1"]  # 数据最低要求
 ADAPT_FIELDS = ["switchRailDisp2", "switchRailDisp3", "pointRailDisp2"]
-BASE_TS = datetime(2026, 9, 26, 0, 0, 0, tzinfo=timezone(timedelta(hours=8)))
+# 缺失三路的模拟依据：A 确认的设计动程（编码与映射表.json，第2页8.2/8.5）
+# 尖轨设计动程 160/118/75mm、心轨 100.6/55.5mm——按第一点比例换算，
+# 仅为演示用近似（非设计值/实测值），生成通道一律进入 simFields 标注。
+STROKE_RATIO = {"switchRailDisp2": 118.0 / 160.0,
+                "switchRailDisp3": 75.0 / 160.0,
+                "pointRailDisp2": 55.5 / 100.6}
 TIME_FMT = CONFIG["适配层"]["时间字符串格式"]
 
 try:
@@ -52,27 +64,33 @@ def load_and_validate(path):
     with open(path, encoding="utf-8") as f:
         rows = json.load(f)
     good, errors = validate_rows(rows, os.path.basename(path),
-                                 required=BASE_REQUIRED)
+                                 required=BASE_REQUIRED,
+                                 extra_fields=ADAPT_FIELDS)
     if errors:
         print(f"[校验失败] {path} 共 {len(errors)} 处非法，拒绝推送：")
         print(format_errors(errors))
         sys.exit(1)
+    n5 = sum(1 for r in good if all(f in r for f in ADAPT_FIELDS))
     print(f"[自检] {os.path.basename(path)} 校验通过：{len(good)} 条，"
+          f"五路齐备 {n5} 条（其余由适配层按设计动程比例模拟并标注），"
           f"time {good[0]['time']}~{good[-1]['time']}s，步长 {STEP}s")
     return good
 
 
 def adapt_row(row):
-    """五路适配：缺失的三路由牵引点模型生成，返回(消息dict, 模拟字段清单)。
-    绝不悄悄补零——凡生成的字段一律进入 simFields 标注。"""
+    """五路适配：完全缺失的字段按设计动程比例生成，返回(消息dict, 模拟清单)。
+
+    仅当字段【完全缺失】才模拟；已提供 null/NaN/字符串/Infinity 的行
+    在 load_and_validate 已被拒绝，绝不替换成模拟值——绝不悄悄补零。
+    """
     msg = dict(row)
     sim = []
     sw1, pr1 = row.get("switchRailDisp1", 0.0), row.get("pointRailDisp1", 0.0)
-    gen = {"switchRailDisp2": round(max(0.0, sw1 * 0.98 - 2), 2),
-           "switchRailDisp3": round(max(0.0, sw1 * 0.96 - 4), 2),
-           "pointRailDisp2": round(max(0.0, pr1 * 0.97 - 2), 2)}
+    gen = {"switchRailDisp2": round(sw1 * STROKE_RATIO["switchRailDisp2"], 2),
+           "switchRailDisp3": round(sw1 * STROKE_RATIO["switchRailDisp3"], 2),
+           "pointRailDisp2": round(pr1 * STROKE_RATIO["pointRailDisp2"], 2)}
     for f in ADAPT_FIELDS:
-        if f not in row or row[f] is None:
+        if f not in row:            # 只补"缺失"，不覆盖/不替换任何已提供值
             msg[f] = gen[f]
             sim.append(f)
     return msg, sim
@@ -81,14 +99,15 @@ def adapt_row(row):
 def build_message(row, seq, rnd):
     msg, sim = adapt_row(row)
     sim_t = float(row["time"])
-    tstr = (BASE_TS + timedelta(seconds=sim_t)).strftime(TIME_FMT)[:-3]
+    tstr = (datetime.now(TZ8)).strftime(TIME_FMT)[:-3]
     msg.update({
         "seq": seq,                  # 全局递增序号（新鲜度判据）
         "round": rnd,                # 回放轮次（从1起，循环归零不混淆）
         "simTime": sim_t,            # 仿真时间（秒）
-        "time": sim_t,               # 兼容旧契约的数值时间
+        "time": now_iso_utc(),       # UTC ISO 8601 当前时刻（页面契约要求）
         "sendTs": int(time.time() * 1000),   # 发送时刻（墙钟毫秒）
-        "timeStr": tstr,             # 时间字符串（页面格式，配置可调）
+        "timeStr": tstr,             # 本地时间字符串（页面展示格式，配置可调）
+        "dataSource": "SIMULATED",   # 契约附加说明字段：当前为模拟回放
     })
     if sim:
         msg["simFields"] = sim       # 明确标注：这些通道为模拟生成
@@ -134,7 +153,7 @@ async def main(port, path):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="数据推送服务 v2（3002）")
+    parser = argparse.ArgumentParser(description="数据推送服务 v3（默认3003，time为UTC ISO）")
     parser.add_argument("--file", default=DATA_FILE)
     parser.add_argument("--port", type=int, default=WS_PORT)
     args = parser.parse_args()

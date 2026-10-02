@@ -9,19 +9,23 @@
 
 用法（开两个窗口）：
     窗口1:  python WebSocket推送服务.py
-    窗口2:  python 实时数据监视.py                # 默认连 ws://localhost:3002
+    窗口2:  python 实时数据监视.py                # 默认连 ws://localhost:3003
             python 实时数据监视.py ws://IP:8765   # 指定地址
 
     Ctrl+C 停止。
 """
 import asyncio
 import json
+import os
 import sys
 
 try:
     from websockets.asyncio.client import connect
 except ImportError:
     from websockets import connect
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from 管道公共 import WS_PORT  # noqa: E402  端口统一走 管道配置.json
 
 SW_LIMIT, PR_LIMIT = 150.0, 100.0  # 《统一标准》告警阈值
 
@@ -39,18 +43,19 @@ async def run(url):
                 flags.append("尖轨超限!")
             if pr > PR_LIMIT:
                 flags.append("心轨超限!")
-            print(f"{r['time']:>6.1f}  {sw:>8.2f}  {pr:>8.2f}  {' '.join(flags)}",
+            print(f"{r['simTime']:>6.1f}  {sw:>8.2f}  {pr:>8.2f}  {' '.join(flags)}",
                   flush=True)
 
 
 if __name__ == "__main__":
-    url = sys.argv[1] if len(sys.argv) > 1 else "ws://localhost:3002"
+    default_url = "ws://localhost:" + str(WS_PORT)
+    url = sys.argv[1] if len(sys.argv) > 1 else default_url
     try:
         asyncio.run(run(url))
     except KeyboardInterrupt:
         print("\n[监视] 已停止")
     except OSError:
-        print("\n[失败] 连不上推送服务：ws://localhost:3002 没有响应")
+        print(f"\n[失败] 连不上推送服务：{default_url} 没有响应")
         print("  原因：WebSocket推送服务没在运行（电台没开播，收音机自然收不到）")
         print("  解决：先双击同目录的 WebSocket演示.bat（或运行 WebSocket推送服务.py），")
         print("        等黑窗口显示'已启动'后，再运行本脚本。")

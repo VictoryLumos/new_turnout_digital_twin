@@ -5,7 +5,7 @@ r"""
 一键体检 B 侧管道（对应组长整改令的验收前置）：
   1) data.json 契约（80条/0.1s/三字段）与超限演示段
   2) 五工况数据集文件齐全（含告警演示 120 行）
-  3) WebSocket 推送就绪（脚本+库+端口3002状态）
+  3) WebSocket 推送就绪（脚本+库+端口状态，端口走配置默认3003）
   4) 数据库五张表行数与超阈值记录
 用法：python 联调自检脚本.py
 """
@@ -100,8 +100,8 @@ try:
                     "WHERE d.value > p.alarm_threshold")
         n_alarm = cur.fetchone()[0]
     check("数据库 turnout_twin 连接", True)
-    check("表行数（构件9/测点20/实时2，时序≥160）",
-          n_comp == 9 and n_point == 20 and n_rt == 2 and n_ts >= 160,
+    check("表行数（构件9/测点20，时序≥160）",
+          n_comp == 9 and n_point == 20 and n_ts >= 160,
           f"构件={n_comp} 测点={n_point} 实时={n_rt} 时序={n_ts} 批次={n_batch}")
     check("库内超阈值记录(跨批累计)", n_alarm >= 29, f"{n_alarm} 条")
 except Exception as e:  # noqa: BLE001

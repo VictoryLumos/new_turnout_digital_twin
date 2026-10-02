@@ -18,7 +18,7 @@ r"""
     浏览器打开 http://localhost:8000/  （首页有可视化状态板和接口清单）
 
 演示剧本（给组长/答辩用）：
-    1) 打开首页看到 健康度100/优；
+    1) 打开首页：未回放且实时值表为空时显示"无数据"（不虚报 100/优）；
     2) POST /api/play/卡阻  → 实时值开始变化，电流爬升；
     3) 刷新 /api/health → 评分跌到 55/故障，/api/workorders 自动多出工单；
     4) POST /api/play/正常转换 或 /api/stop → 恢复。
@@ -37,7 +37,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DS_DIR = os.path.join(HERE, "扩展数据集v2")
 CONDITIONS = ["正常转换", "卡阻", "密贴不良", "锁闭失败", "告警演示"]
 
-from 管道公共 import db_session, DB  # 统一配置（管道配置.json）+ 失败重试
+from 管道公共 import db_session, DB, ResilientDB  # 统一配置 + 断线恢复
 BASE_TS = datetime(2026, 9, 26, 0, 0, 0, tzinfo=timezone(timedelta(hours=8)))
 
 # 数据字段 → 测点编码（《完整版》编码映射表全量 20 项）
@@ -57,15 +57,17 @@ FIELD_TO_POINT = {
 }
 CODE_OF = {name: code for name, code in FIELD_TO_POINT.items()}
 
-app = FastAPI(title="道岔数字孪生数据服务", version="2.0")
+app = FastAPI(title="道岔数字孪生数据服务", version="2.1")
+RDB = ResilientDB()   # 长连接：运行中数据库断线自动重连恢复（整改第二轮）
 _play = {"thread": None, "stop": threading.Event(), "condition": None, "t": None}
 
 
 def q(sql, args=(), fetch=True):
-    """字面量SQL + 参数绑定执行；连接失败自动重试（管道公共.db_session）。"""
-    with db_session() as cur:
+    """字面量SQL + 参数绑定执行；运行中断线由 ResilientDB 自动重连恢复。"""
+    def _op(cur):
         cur.execute(sql, args)
         return cur.fetchall() if fetch else None
+    return RDB.run(_op)
 
 
 def latest_values():
@@ -76,10 +78,15 @@ def latest_values():
 def health_check(vals):
     """规则模型：健康度评分 + 扣分明细。返回 (score, grade, issues)
 
+    无数据不评估：vals 为空时返回 (None, "无数据", [])——绝不显示
+    "健康度100/优"（整改第二轮：没有数据不能虚报健康）。
+
     稳态门：电机运行中（电流≥1A）只判"过程类"故障（过流/超程），
     "结果类"故障（未到位/锁闭/密贴）只在电机空闲（转换动作已结束）时判定，
     避免把转换过程中的正常过渡态误报成故障。
     """
+    if not vals:
+        return None, "无数据", []
     g = lambda c: vals.get(CODE_OF[c])
     disp, cur = g("switchRailDisp1"), g("switchMachineCurrent")
     lock, close = g("lockStatus"), g("closeStatus")
@@ -130,16 +137,18 @@ def ensure_work_order(point, remark, issued):
 
 
 def playback(condition):
-    """回放线程：把工况数据集按 0.1s 注入实时值表，并做健康检查+工单联动"""
+    """回放线程：把工况数据集按 0.1s 注入实时值表，并做健康检查+工单联动。
+
+    数据库走 ResilientDB 长连接：注入过程中数据库重启/连接被杀，
+    当前帧自动重连重放，回放不中断（整改第二轮第3条）。
+    """
     path = os.path.join(DS_DIR, f"工况_{condition}.json")
     rows = json.load(open(path, encoding="utf-8"))
-    conn = psycopg2.connect(**DB)
-    thresholds = {}
-    with conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT point_code, alarm_threshold FROM measurement_point "
-                        "WHERE alarm_threshold IS NOT NULL")
-            thresholds = dict(cur.fetchall())
+    rdb = ResilientDB()
+    thresholds = dict(rdb.run(lambda cur: (
+        cur.execute("SELECT point_code, alarm_threshold FROM measurement_point "
+                    "WHERE alarm_threshold IS NOT NULL"),
+        cur.fetchall())[1]))
     print(f"[回放] 开始注入工况「{condition}」（{len(rows)} 行 × 0.1s）")
     issued = set()
     try:
@@ -149,17 +158,17 @@ def playback(condition):
             ts = BASE_TS + timedelta(seconds=r["time"])
             score, grade, issues = 100.0, "优", []
             try:
-                with conn:
-                    with conn.cursor() as cur:
-                        upsert = ("INSERT INTO realtime_value (point_code, value, ts, alarm, updated_at) "
-                                  "VALUES %s ON CONFLICT (point_code) DO UPDATE SET "
-                                  "value=EXCLUDED.value, ts=EXCLUDED.ts, alarm=EXCLUDED.alarm, "
-                                  "updated_at=now()")
-                        execute_values(cur, upsert, [
-                            (point, r[field], ts,
-                             point in thresholds and r[field] > thresholds[point])
-                            for field, point in FIELD_TO_POINT.items() if field in r],
-                            template="(%s, %s, %s, %s, now())")
+                def _flush(cur, _r=r, _ts=ts):
+                    execute_values(cur,
+                        "INSERT INTO realtime_value (point_code, value, ts, alarm, updated_at) "
+                        "VALUES %s ON CONFLICT (point_code) DO UPDATE SET "
+                        "value=EXCLUDED.value, ts=EXCLUDED.ts, alarm=EXCLUDED.alarm, "
+                        "updated_at=now()",
+                        [(point, _r[field], _ts,
+                          point in thresholds and _r[field] > thresholds[point])
+                         for field, point in FIELD_TO_POINT.items() if field in _r],
+                        template="(%s, %s, %s, %s, now())")
+                rdb.run(_flush)
                 vals = {FIELD_TO_POINT[f]: r[f] for f in r if f in FIELD_TO_POINT}
                 score, grade, issues = health_check(vals)
                 _play["t"] = r["time"]
@@ -169,17 +178,20 @@ def playback(condition):
                 import traceback
                 traceback.print_exc()
             if int(r["time"] * 10) % 10 == 0:
-                print(f"  [回放] t={r['time']:>4.1f}s 健康度={score:.0f}({grade})")
+                mark = f"{score:.0f}({grade})" if score is not None else "(无数据)"
+                print(f"  [回放] t={r['time']:>4.1f}s 健康度={mark}")
             _play["stop"].wait(0.1)
     finally:
-        conn.close()
+        rdb.close()
         print(f"[回放] 工况「{condition}」注入结束")
 
 
 @app.get("/", response_class=HTMLResponse)
 def index():
     score, grade, issues = health_check(latest_values())
-    color = {"优": "#22c55e", "良": "#eab308", "预警": "#f97316", "故障": "#ef4444"}[grade]
+    color = {"优": "#22c55e", "良": "#eab308", "预警": "#f97316",
+             "故障": "#ef4444", "无数据": "#64748b"}[grade]
+    score_html = f"{score:.0f}" if score is not None else "--"
     conds = "".join(
         f'<a href="javascript:play(\'{c}\')" '
         f'style="margin-right:10px">{c}</a>' for c in CONDITIONS)
@@ -191,10 +203,10 @@ a{{color:#38bdf8}} code{{background:#1e2f4d;padding:1px 6px;border-radius:4px}}
 button{{background:#2563eb;border:0;color:#fff;border-radius:6px;padding:3px 10px;cursor:pointer;font-size:12px}}
 .wos{{font-size:13px;margin-top:6px;line-height:1.9}}</style></head><body>
 <h1>道岔数字孪生 · 数据服务（B线 · 完整版服务层）</h1>
-<div class="c">健康度 <span id="score" style="font-size:34px;font-weight:bold;color:{color}">{score:.0f}</span>
+<div class="c">健康度 <span id="score" style="font-size:34px;font-weight:bold;color:{color}">{score_html}</span>
 <span id="grade" style="color:{color}">{grade}</span>
 <div id="issues" style="font-size:13px;color:#94a3b8;margin-top:6px">
-{'；'.join(i['规则'] for i in issues) or '无扣分项'}</div>
+{'；'.join(i['规则'] for i in issues) or ('暂无实时数据：不虚报100/优，点击下方工况开始回放' if score is None else '无扣分项')}</div>
 <div id="cond" style="font-size:13px;color:#64748b;margin-top:4px">当前回放：无</div></div>
 <div class="c"><b>行为模型回放</b>（点击注入工况，观察健康度与工单联动）：<br><br>{conds}
 <a href="javascript:fetch('/api/stop').then(r=>r.json()).then(loadAll)">停止</a></div>
@@ -212,12 +224,12 @@ function repair(id){{fetch('/api/repair/'+id,{{method:'POST'}}).then(r=>r.json()
 document.getElementById('issues').textContent=d.msg;loadAll()}})}}
 function load(){{
 fetch('/api/health').then(r=>r.json()).then(d=>{{
-const co={{'优':'#22c55e','良':'#eab308','预警':'#f97316','故障':'#ef4444'}};
-document.getElementById('score').textContent=d.健康度评分;
+const co={{'优':'#22c55e','良':'#eab308','预警':'#f97316','故障':'#ef4444','无数据':'#64748b'}};
+document.getElementById('score').textContent=(d.健康度评分==null?'--':d.健康度评分);
 document.getElementById('score').style.color=co[d.等级];
 document.getElementById('grade').textContent=d.等级;
 document.getElementById('grade').style.color=co[d.等级];
-document.getElementById('issues').textContent=d.扣分明细.map(i=>i.规则).join('；')||'无扣分项';
+document.getElementById('issues').textContent=(d.健康度评分==null)?(d.说明||'暂无实时数据'):(d.扣分明细.map(i=>i.规则).join('；')||'无扣分项');
 document.getElementById('cond').textContent='当前回放：'+d.当前回放+(d.仿真时刻!=null?' · 仿真时刻 '+d.仿真时刻+'s':'')}})}}
 function loadWos(){{
 fetch('/api/workorders').then(r=>r.json()).then(d=>{{
@@ -257,9 +269,12 @@ def api_alarms():
 def api_health():
     score, grade, issues = health_check(latest_values())
     return {"健康度评分": score, "等级": grade, "扣分明细": issues,
+            "说明": ("实时值表暂无数据：不虚报健康度，等待回放或数据接入"
+                     if score is None else None),
             "当前回放": _play["condition"] or "无",
             "仿真时刻": _play["t"],
-            "评估时间": datetime.now().strftime("%H:%M:%S")}
+            "评估时间": datetime.now(timezone(timedelta(hours=8)))
+                        .isoformat(timespec="seconds")}
 
 
 @app.get("/api/workorders")
@@ -281,13 +296,29 @@ def api_history(point_code: str, start: str = None, end: str = None,
     tz8 = timezone(timedelta(hours=8))
 
     def parse_t(s):
-        for f in ("%H:%M:%S", "%H:%M"):
+        """完整日期时间解析（整改第二轮：不再写死2026-09-26）。
+
+        支持：ISO 8601（含时区，如 2026-10-02T14:30:05+08:00 / ...Z）、
+        "YYYY-MM-DD HH:MM[:SS]"、"YYYY-MM-DD"（当日00:00起）。
+        无时区按北京时间；跨时区自动换算后与库内时间轴比较。
+        纯 HH:MM[:SS] 已停用（历史数据跨多日，纯时刻有歧义）→ 400 提示。
+        """
+        txt = s.strip()
+        try:
+            d = datetime.fromisoformat(txt.replace("Z", "+00:00"))
+            return d.astimezone(tz8)
+        except ValueError:
+            pass
+        for f in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
             try:
-                d = datetime.strptime(s, f).replace(tzinfo=tz8)
-                return d.replace(year=2026, month=9, day=26)
+                return datetime.strptime(txt, f).replace(tzinfo=tz8)
             except ValueError:
                 pass
-        raise HTTPException(400, f"时间格式应为 HH:MM 或 HH:MM:SS，收到 {s}")
+        if len(txt) <= 8 and ":" in txt:
+            raise HTTPException(
+                400, "纯时刻(HH:MM[:SS])已停用：历史数据已跨多日存在歧义，"
+                     "请传完整日期时间（含时区），如 2026-10-02T14:30:00+08:00")
+        raise HTTPException(400, f"时间格式应为完整日期时间（ISO 8601），收到 {s}")
 
     cond = ["point_code = %s"]
     params = [point_code]
@@ -305,15 +336,22 @@ def api_history(point_code: str, start: str = None, end: str = None,
     sql_txt += " AND ".join(cond)
     sql_txt += " ORDER BY ts DESC LIMIT %s"
     rows = q(sql_txt, params)
-    data = [{"时刻": t.strftime("%H:%M:%S.%f")[:-4], "值": float(v),
-             "来源": s, "批次": b or "(未标注)"} for t, v, s, b in reversed(rows)]
+    data = []
+    for t, v, s, b in reversed(rows):
+        if t.tzinfo is None:            # 兼容无时区列：统一按北京时间补齐
+            t = t.replace(tzinfo=tz8)
+        data.append({"日期": t.strftime("%Y-%m-%d"),
+                     "时刻": t.strftime("%H:%M:%S.%f")[:-4],
+                     "时刻ISO": t.astimezone(tz8).isoformat(timespec="milliseconds"),
+                     "值": float(v), "来源": s, "批次": b or "(未标注)"})
     if format == "csv":
         import csv as _csv, io as _io
         buf = _io.StringIO()
         w = _csv.writer(buf)
-        w.writerow(["时刻", "值", "来源", "批次"])
+        w.writerow(["日期", "时刻", "时刻ISO", "值", "来源", "批次"])
         for d in data:
-            w.writerow([d["时刻"], d["值"], d["来源"], d["批次"]])
+            w.writerow([d["日期"], d["时刻"], d["时刻ISO"],
+                        d["值"], d["来源"], d["批次"]])
         return Response(content="﻿" + buf.getvalue(),
                         media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition":
@@ -347,7 +385,9 @@ ADVICE = {
 def api_diagnosis():
     """故障诊断（规则版）：健康度扣分项 → 诊断结论 + 维修建议"""
     score, grade, issues = health_check(latest_values())
-    if issues:
+    if score is None:
+        concl = "实时值表暂无数据，不做诊断（不虚报'设备健康'）"
+    elif issues:
         concl = [{"问题": i["规则"], "关联测点": i["关联测点"],
                   "维修建议": ADVICE.get(i["规则"], "建议现场检查")}
                  for i in issues]

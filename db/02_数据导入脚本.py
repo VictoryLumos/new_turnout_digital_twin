@@ -8,6 +8,9 @@ r"""
   · 批次能力：--source 指定来源（um 不再被写死成 fake）、--batch 指定批次、
     时间轴自动错峰（默认排到库中最新数据之后的下一个整点时段），
     换一批数据不再需要清空历史表；--replace-source 仅替换同来源旧数据。
+  · 同批次幂等（整改第二轮第3条）：指定 --batch 且该批次已在库中时，
+    自动复用其既有时间轴，重复行按 (测点,时间) 冲突跳过——同批次重导
+    不新增重复记录；不同批次时间轴错峰、正常共存。
 
 用法：
     python 02_数据导入脚本.py                          # data.json，来源fake
@@ -26,6 +29,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "data"))
 from 管道公共 import db_session, validate_rows, format_errors  # noqa: E402
 
 BASE_REQUIRED = ["time", "switchRailDisp1", "pointRailDisp1"]
+# 五路中可选三路：出现即校验（NaN/Inf/字符串/null 拒绝，整改第二轮第2条）
+EXTRA_FIELDS = ["switchRailDisp2", "switchRailDisp3", "pointRailDisp2"]
 
 # 数据字段 → 测点编码（《完整版》映射表全量 20 项）
 FIELD_TO_POINT = {
@@ -78,20 +83,31 @@ def main():
     with open(args.file, encoding="utf-8") as f:
         rows = json.load(f)
     good, errors = validate_rows(rows, os.path.basename(args.file),
-                                 required=BASE_REQUIRED)
+                                 required=BASE_REQUIRED,
+                                 extra_fields=EXTRA_FIELDS)
     if errors:
         print(f"[校验失败] {args.file} 共 {len(errors)} 处非法，拒绝入库：")
         print(format_errors(errors))
         sys.exit(1)
     print(f"[校验] 通过：{len(good)} 条（{args.file}）")
 
-    # 2) 批次与时间轴
+    # 2) 批次与时间轴（同批次重导幂等：复用该批次既有时间轴，
+    #    (测点,时间) 冲突自动跳过 → 不新增重复记录；不同批次正常错峰共存）
     batch = args.batch or datetime.now().strftime("IMP-%Y%m%d-%H%M")
     if args.base:
         base = datetime.strptime(args.base, "%Y-%m-%d %H:%M:%S").replace(
             tzinfo=timezone(timedelta(hours=8)))
     else:
-        base = next_free_hour()
+        with db_session() as cur:
+            cur.execute("SELECT min(ts) FROM timeseries_data WHERE batch = %s",
+                        (batch,))
+            row = cur.fetchone()
+        if row and row[0] is not None:
+            base = row[0].astimezone(timezone(timedelta(hours=8)))
+            print(f"[幂等] 批次 {batch} 已存在（{row[0]} 起）：复用其时间轴，"
+                  "重导不新增重复记录")
+        else:
+            base = next_free_hour()
     print(f"[批次] source={args.source} batch={batch} 时间轴起点={base:%Y-%m-%d %H:%M}")
 
     # 3) 组装（全部参数绑定，无SQL拼接）

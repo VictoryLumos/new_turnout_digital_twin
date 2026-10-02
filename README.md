@@ -38,10 +38,10 @@
 **可选 WebSocket 实时推送**：
 
 ```
-python data/WebSocket推送服务.py        # B 机上运行，端口 3002（统一）
+python data/WebSocket推送服务.py        # B 机上运行，端口 3003（3002 已由 C 的 iTwin 服务占用）
 ```
 
-C 连接 `ws://localhost:3002`（跨机用 B 的 IPv4）；消息含 seq/round/simTime/sendTs/timeStr 元信息与 simFields 模拟标注；失败退回本地 JSON。
+C 连接 `ws://localhost:3003`（跨机用 B 的 IPv4）；消息 `time` 为 UTC ISO 8601 当前时间字符串（页面 Date.parse 直接可用），另含 simTime/seq/round/sendTs/timeStr 元信息与 simFields 模拟标注；失败退回本地 JSON。
 
 **数据库（完整版线，已跑通）**：PostgreSQL 17.9 装于 B 机 `D:\PostgreSQL`（Windows 服务 postgresql-x64-17，开机自启），库 `turnout_twin`，账号 postgres / postgres，端口 5432。建表脚本 `db/01_建表与种子数据.sql`（TimescaleDB 可选，未装自动降级），入库脚本 `db/02_数据导入脚本.py`。当前库内：构件 9、测点 20、时序 160、工单 20。
 
