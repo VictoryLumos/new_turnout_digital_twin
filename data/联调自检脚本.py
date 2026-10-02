@@ -100,9 +100,10 @@ try:
                     "WHERE d.value > p.alarm_threshold")
         n_alarm = cur.fetchone()[0]
     check("数据库 turnout_twin 连接", True)
-    check("表行数（构件9/测点20/实时2，时序≥160）",
-          n_comp == 9 and n_point == 20 and n_rt == 2 and n_ts >= 160,
-          f"构件={n_comp} 测点={n_point} 实时={n_rt} 时序={n_ts} 批次={n_batch}")
+    check("表行数（构件9/测点20/实时2或20，时序≥160）",
+          n_comp == 9 and n_point == 20 and n_rt in (2, 20) and n_ts >= 160,
+          f"构件={n_comp} 测点={n_point} 实时={n_rt}(2=基础写入器,20=工况回放后) "
+          f"时序={n_ts} 批次={n_batch}")
     check("库内超阈值记录(跨批累计)", n_alarm >= 29, f"{n_alarm} 条")
 except Exception as e:  # noqa: BLE001
     hint = "服务没起来？管理员运行：net start postgresql-x64-17"
