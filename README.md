@@ -7,26 +7,29 @@
 | 目录 | 责任人 | 内容 |
 |---|---|---|
 | model/ | A | glTF/GLB 模型（待 A 首次提交时创建） |
-| data/ | B | data.json、WebSocket推送服务.py、数据服务API.py、四工况数据集（扩展数据集v2/）、仿真数据转换脚本.py、自检与压测脚本 |
+| data/ | B | data.json、WebSocket推送服务.py、仿真数据转换脚本.py |
 | web/ | C | HTML/JS 页面（待 C 首次提交时创建） |
 | db/ | B | 数据库脚本（**新增目录**，不在《统一标准》原定结构内） |
 | docs/ | 共同 | 接口契约、设计文档 |
 | report/ | 共同 | 报告材料（暂空） |
 
-## 数据契约速览（详见 docs/周彩堡提交的/数据格式约定_v2.0_草案.md；A/C 对接实操见 docs/接口对接指南_v1.0.md）
+## 数据契约速览（详见 docs/数据格式约定_v1.0.md）
 
 | 项 | 约定 |
 |---|---|
 | 文件 | data/data.json（文件名定死） |
-| 字段 | time（秒）、switchRailDisp1（mm）、pointRailDisp1（mm） |
-| 步长/条数 | 0.1 秒 × 80 条（8 秒），循环播放 |
+| 字段 | time（秒）+ 五路位移（switchRailDisp1/2/3、pointRailDisp1/2，mm）；基础 data.json 仅含两路，三路由推送适配层模拟生成并标注 |
+| 步长/条数 | 0.1 秒；data.json 80 条/8 秒循环；扩展工况 100~120 条 |
 | 坐标换算 | 毫米 × 0.001 = 米 |
 | 告警阈值 | 尖轨 > 150mm 变红；心轨 > 100mm 变红（前端判定） |
-| 模型节点 | 尖轨 SwitchRail、心轨 PointRail，沿模型 X 轴移动（以 A 导出确认为准） |
+| 模型节点 | 尖轨 SwitchRail、心轨 PointRail；**iModel 横移方向为 Y 轴**（旧文档"沿X轴"说法作废，2026-10-02 组长确认） |
 
 ## 快速上手
 
-**B 侧一键自检**：`python data/联调自检脚本.py`——数据契约 / 四工况数据集 / 依赖 / 数据库 / 工单联动证据一次查完（15 项），全 [OK] 即可联调。
+**依赖安装**：`pip install -r requirements.txt`（websockets/fastapi/uvicorn/psycopg2-binary）
+**接口与整改说明**：见 `docs/B线交付说明_v2.0.md`（契约 v2、验收材料清单）
+
+**B 侧一键自检**：`python data/联调自检脚本.py`——数据契约 / 推送就绪 / 数据库连通一次查完，全 [OK] 即可联调。
 
 **库内实时表格演示**：`python data/实时数据入库.py` 后，另开窗口用 psql 查 `realtime_value` 表（加 `\watch 1` 每秒自动刷新），即可看到库里数值实时跳动——对应完整版"实时接入→库"链路。
 
@@ -35,14 +38,12 @@
 **可选 WebSocket 实时推送**：
 
 ```
-python data/WebSocket推送服务.py        # B 机上运行，端口 8765
+python data/WebSocket推送服务.py        # B 机上运行，端口 3002（统一）
 ```
 
-C 连接 `ws://localhost:8765`（跨机用 B 的 IPv4）；失败则退回本地 JSON，不阻塞交付。
+C 连接 `ws://localhost:3002`（跨机用 B 的 IPv4）；消息含 seq/round/simTime/sendTs/timeStr 元信息与 simFields 模拟标注；失败退回本地 JSON。
 
-**服务层 API（完整版线核心，一键演示）**：双击 `data/服务API演示.bat`（或 `python -m uvicorn 数据服务API:app --port 8000`），浏览器开 `http://localhost:8000/`：可视化状态板 + 四工况回放注入 + 健康度/工单/维修闭环 + **工况自动识别**（8 维统计特征最近邻，约 3 秒出识别结果与置信度）+ `/trend` 历史趋势回放页。CORS 已放开，C 的页面可直接 fetch 所有 `/api/*` 接口。稳定性验收：`python data/稳定性压测.py`（3 分钟全接口轮询报告）。
-
-**数据库（完整版线，已跑通并升级 v2）**：PostgreSQL 17.9 装于 B 机 `D:\PostgreSQL`（Windows 服务 postgresql-x64-17，开机自启），库 `turnout_twin`，账号 postgres / postgres，端口 5432。建表 `db/01_建表与种子数据.sql`（TimescaleDB 可选，未装自动降级）→ 升级 `db/05_数据库升级v2.sql`（中文注释、查询索引、**告警审计触发器**、4 个分析视图、健康度/维修存档表，幂等可重复执行）→ 体检 `python db/06_数据库体检.py`（9 项：执行计划/索引/缓存命中率/数据质量，当前 9/9）。入库 `db/02_数据导入脚本.py`、`db/04_扩展数据入库.py`（四工况 8000 条）、`db/07_运维历史入库.py`（**一天运维历史 26000 条**：13 次转换含 3 次故障，趋势页"全部"即一天全景）。当前库内：构件 9、测点 20、时序 34000、工单 40、实时值 20、告警审计 696、健康度/维修存档随演示累积。
+**数据库（完整版线，已跑通）**：PostgreSQL 17.9 装于 B 机 `D:\PostgreSQL`（Windows 服务 postgresql-x64-17，开机自启），库 `turnout_twin`，账号 postgres / postgres，端口 5432。建表脚本 `db/01_建表与种子数据.sql`（TimescaleDB 可选，未装自动降级），入库脚本 `db/02_数据导入脚本.py`。当前库内：构件 9、测点 20、时序 160、工单 20。
 
 **UM 仿真数据接入（第 3-5 周）**：A 给 CSV 后，先 `python data/仿真数据转换脚本.py --file xx.csv` 转成契约 JSON（自动校验步长字段），再替换或入库；替换 data/data.json 前须群通知。
 
@@ -57,4 +58,4 @@ C 连接 `ws://localhost:8765`（跨机用 B 的 IPv4）；失败则退回本地
 
 模型等大文件存放于网盘（待建）：**链接：（待填，建好后置顶群公告并更新此处）**
 
-共享代码仓库（GitHub，2026-09-27 起）：**https://github.com/VictoryLumos/new_turnout_digital_twin**（组长建库，三人协作；日常同步双击根目录 `上传到共享仓库.bat`）
+Gitee 仓库地址（待建）：**（待填）**

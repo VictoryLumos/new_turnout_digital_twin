@@ -57,11 +57,6 @@
     </div>
   </div>
 
-  <div class="panel" id="fullPanel" style="display:none">
-    <div class="title"><span>全字段数据（推送服务带 --dataset 时自动出现 · 契约v2.0 可选字段）</span></div>
-    <div id="fullGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 14px;font-size:12px;padding-bottom:8px"></div>
-  </div>
-
   <div class="panel">
     <div class="title">
       <span>实时曲线（最近 30 秒 · 红色虚线=告警阈值 尖轨150 / 心轨100）</span>
@@ -72,15 +67,14 @@
 
   <div class="controls">
     <span style="font-size:12px;color:#64748b">服务地址</span>
-    <input id="url" value="ws://localhost:8765">
+    <input id="url" value="ws://localhost:3002">
     <button onclick="go()">重连</button>
   </div>
 
   <div class="note">
     B 线 WebSocket 通道自检页（不是项目交付物——正式仪表盘与 3D 模型页面由 C 按《统一标准》实现）。
     启动 <b>WebSocket推送服务.py</b> 后打开本页：数值 0.1s 刷新、8 秒一轮；曲线越过红色虚线即超限（尖轨150/心轨100）。
-    带 <b>--dataset 工况</b> 启动时推送全字段数据（契约v2.0），本页自动显示"全字段数据"面板。
-    C 的正式页面可直接复用本页连接代码：new WebSocket → onmessage 解析 JSON（多余字段直接忽略即可）。
+    C 的正式页面可直接复用本页连接代码：new WebSocket → onmessage 解析 JSON。
   </div>
 </div>
 
@@ -91,42 +85,7 @@ let swArr = [], prArr = [];
 let received = 0, loops = 0, lastTime = null;
 let rateStamps = [];
 
-// 全字段面板（契约v2.0：收到扩展字段时自动显示）
-const EXTRA_FIELDS = [
-  ["switchMachineCurrent", "转辙机电流", "A"],
-  ["switchMachinePower", "转辙机功率", "W"],
-  ["lockStatus", "锁闭表示", ""],
-  ["closeStatus", "密贴表示", ""],
-  ["switchRailForce1", "尖轨牵引力1", "N"],
-  ["frogVibration", "辙叉振动", "m/s²"],
-  ["frogWear", "辙叉磨耗", "mm"],
-  ["wheelRailForceLateral", "轮轨横向力", "kN"],
-  ["wheelRailForceVertical", "轮轨垂向力", "kN"],
-  ["guardRailDisp", "护轨位移", "mm"],
-  ["railTemperature", "轨温", "℃"],
-];
-let extraBuilt = false;
-
 const $ = id => document.getElementById(id);
-
-function buildExtraPanel(sample) {
-  const grid = $("fullGrid");
-  grid.innerHTML = EXTRA_FIELDS
-    .filter(([k]) => sample[k] !== undefined)
-    .map(([k, label, unit]) => `<div><span style="color:#64748b">${label}</span>
-      <b id="xf_${k}" style="display:block;font-size:15px;color:#e2e8f0">--</b>
-      <small style="color:#475569">${unit}</small></div>`).join("");
-  $("fullPanel").style.display = "";
-  extraBuilt = true;
-}
-
-function renderExtra(d) {
-  for (const [k] of EXTRA_FIELDS) {
-    if (d[k] === undefined) continue;
-    const el = $("xf_" + k);
-    if (el) el.textContent = d[k];
-  }
-}
 
 function setStatus(text, on) {
   $("st").textContent = text;
@@ -152,8 +111,6 @@ function connect() {
       if (swArr.length > MAXPTS) { swArr.shift(); prArr.shift(); }
       render(sw, pr, t);
     }
-    if (!extraBuilt && d.switchMachineCurrent !== undefined) buildExtraPanel(d);
-    if (extraBuilt) renderExtra(d);
     draw();
   };
   ws.onclose = () => { setStatus("已断开，2秒后自动重连", false); reconnectTimer = setTimeout(connect, 2000); };

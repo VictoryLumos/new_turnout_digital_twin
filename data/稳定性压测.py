@@ -19,9 +19,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 BASE = "http://127.0.0.1:8000"
+ALLOWED_HOSTS = {"127.0.0.1", "localhost"}   # 压测目标白名单：仅本机数据服务API
 CONDITIONS = ["正常转换", "卡阻", "密贴不良", "锁闭失败"]
 READ_PATHS = ["/api/health", "/api/realtime", "/api/alarms",
               "/api/workorders", "/api/identify", "/api/stats",
@@ -34,9 +35,18 @@ identify_hits = 0
 identify_total = 0
 
 
+def build_url(path):
+    """拼接并校验请求地址：仅允许 http/https 且主机必须在白名单内（本机API），防 SSRF。"""
+    url = BASE + quote(path, safe="/?=&")   # 保留查询串分隔符，只编码中文工况名
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or parsed.hostname not in ALLOWED_HOSTS:
+        raise ValueError(f"请求目标未通过白名单校验：{url}")
+    return url
+
+
 def call(path, method="GET"):
     """请求一次，返回 (状态码, json/None, 耗时ms)。异常返回 (None, 详情, 耗时)"""
-    url = BASE + quote(path, safe="/?=&")   # 保留查询串分隔符，只编码中文工况名
+    url = build_url(path)
     req = urllib.request.Request(url, method=method)
     t0 = time.perf_counter()
     try:

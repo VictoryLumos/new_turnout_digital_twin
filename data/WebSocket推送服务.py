@@ -1,122 +1,145 @@
 # -*- coding: utf-8 -*-
-"""
-道岔数字孪生 —— WebSocket 数据推送服务（B：数据管道线）
+r"""
+道岔数字孪生 —— WebSocket 数据推送服务 v2（B：数据管道线，整改版）
 
-作用：
-    读取同目录下的 data.json，按数据契约的时间步长（0.1 秒）实时逐条
-    推送给 C 的网页端；推完自动从头再来（循环播放）。
-    每个接入的客户端独立从 t=0 开始收数据。
+对应组长整改令第 1/3/4/5 条：
+  · 启动即校验：缺字段/字符串/null/NaN/Infinity/乱序 拒绝启动并定位到 行号+字段
+  · 消息带元信息：seq(全局序号) round(轮次) simTime(仿真秒) sendTs(发送时刻毫秒)
+    timeStr(时间字符串) —— 区分仿真时间与发送时间，循环归零不会被前端判旧
+  · 循环边界：按绝对时刻对齐，轮与轮之间保证 ≥ 步长，不会瞬发两帧
+  · 五路位移适配：数据缺 switchRailDisp2/3、pointRailDisp2 时按牵引点
+    模型生成，并在消息 simFields 中【显式标注为模拟】，绝不悄悄补零
+  · 端口统一为 3002（管道配置.json），--port 可临时覆盖（如旧联调 8765）
+  · 断线：服务端支持客户端随时断开重连；客户端自动重连由 C 实现，
+    B 的参考实现见 WebSocket测试页面.html（2 秒自动重连）
 
 用法：
-    pip install websockets
-    python WebSocket推送服务.py                       # 默认推送 data.json（基础契约3字段）
-    python WebSocket推送服务.py --port 9000           # 换端口
-    python WebSocket推送服务.py --dataset 卡阻         # 推送扩展数据集v2 四工况之一
-                                                      #（time+20测点字段，契约v2.0可选字段，
-                                                      #  C 页面按需取字段、忽略多余字段即可）
-
-C 端连接地址：
-    C 和你同一台电脑：ws://localhost:8765
-    C 在同一局域网其他电脑：ws://<你的IP>:8765（ipconfig 查你的 IPv4 地址）
-
-说明：
-    - 推送内容与 data.json 完全一致（契约字段 time / switchRailDisp1 / pointRailDisp1），
-      超限变红由 C 在前端按《统一标准》阈值（尖轨>150mm、心轨>100mm）实现。
-    - 按《统一标准》推送方式的约定：若 WebSocket 联调失败，退回 C 直接读本地
-      data.json，不影响交付。
-    - 启动时先自检数据文件（条数 / 步长 / 时间范围），
-      即《分工》第一个环节里"读 JSON、确认能读"这一步。
+    python WebSocket推送服务.py                     # 默认 data.json，端口3002
+    python WebSocket推送服务.py --file 扩展数据集v2/工况_告警演示.json
+    python WebSocket推送服务.py --port 8765         # 临时旧端口
+C 端连接：ws://<B的IP>:3002
 """
 import argparse
 import asyncio
 import json
 import os
 import sys
+import time
+from datetime import datetime, timedelta, timezone
 
-DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.json")
-DS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "扩展数据集v2")
-CONDITIONS = ["正常转换", "卡阻", "密贴不良", "锁闭失败"]
-STEP_SECONDS = 0.1  # 《统一标准》数据契约：时间步长 0.1 秒
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from 管道公共 import (CONFIG, STEP, WS_PORT, validate_rows,  # noqa: E402
+                     format_errors)
+
+DATA_FILE = os.path.join(HERE, "data.json")
+BASE_REQUIRED = ["time", "switchRailDisp1", "pointRailDisp1"]  # 数据最低要求
+ADAPT_FIELDS = ["switchRailDisp2", "switchRailDisp3", "pointRailDisp2"]
+BASE_TS = datetime(2026, 9, 26, 0, 0, 0, tzinfo=timezone(timedelta(hours=8)))
+TIME_FMT = CONFIG["适配层"]["时间字符串格式"]
 
 try:
-    from websockets.asyncio.server import serve        # websockets >= 13
+    from websockets.asyncio.server import serve
     from websockets.exceptions import ConnectionClosed
 except ImportError:
-    try:
-        from websockets import serve                    # 旧版 websockets
-        from websockets.exceptions import ConnectionClosed
-    except ImportError:
-        sys.exit("缺少依赖：请先执行  pip install websockets")
+    sys.exit("缺少依赖：pip install websockets（见 requirements.txt）")
 
-ROWS = []  # 启动时由 load_data() 填充
+ROWS = []          # 启动时加载并校验
+SEQ_TOTAL = 0      # 全局序号（跨轮次累计，证明数据新鲜度）
 
 
-def load_data():
-    """读 data.json 并自检（条数 / 步长 / 时间范围），返回数据列表。"""
-    with open(DATA_FILE, encoding="utf-8") as f:
-        rows = json.load(f)
-    return check_rows(rows, str(DATA_FILE))
-
-
-def load_dataset(condition):
-    """读扩展数据集v2 指定工况并自检（契约 v2.0：time + 20 测点字段）。"""
-    path = os.path.join(DS_DIR, f"工况_{condition}.json")
-    if not os.path.exists(path):
-        sys.exit(f"[失败] 找不到 {path}，可用工况：{CONDITIONS}")
+def load_and_validate(path):
     with open(path, encoding="utf-8") as f:
         rows = json.load(f)
-    rows = check_rows(rows, path)
-    print(f"[契约v2] 推送全字段数据（{len(rows[0])} 字段），"
-          f"C 页面按需取字段、忽略多余字段即可")
-    return rows
+    good, errors = validate_rows(rows, os.path.basename(path),
+                                 required=BASE_REQUIRED)
+    if errors:
+        print(f"[校验失败] {path} 共 {len(errors)} 处非法，拒绝推送：")
+        print(format_errors(errors))
+        sys.exit(1)
+    print(f"[自检] {os.path.basename(path)} 校验通过：{len(good)} 条，"
+          f"time {good[0]['time']}~{good[-1]['time']}s，步长 {STEP}s")
+    return good
 
 
-def check_rows(rows, src):
-    """数据自检：非空 + 步长 0.1s 均匀，坏了报错不静默。"""
-    assert rows, f"{src} 是空的"
-    steps = {round(rows[i + 1]["time"] - rows[i]["time"], 6) for i in range(len(rows) - 1)}
-    assert steps == {STEP_SECONDS}, f"步长异常 {steps}，契约要求 0.1 秒"
-    print(f"[自检] {os.path.basename(src)} 读取成功：{len(rows)} 条 × {len(rows[0])} 字段，"
-          f"time {rows[0]['time']}~{rows[-1]['time']}s，步长 {STEP_SECONDS}s")
-    return rows
+def adapt_row(row):
+    """五路适配：缺失的三路由牵引点模型生成，返回(消息dict, 模拟字段清单)。
+    绝不悄悄补零——凡生成的字段一律进入 simFields 标注。"""
+    msg = dict(row)
+    sim = []
+    sw1, pr1 = row.get("switchRailDisp1", 0.0), row.get("pointRailDisp1", 0.0)
+    gen = {"switchRailDisp2": round(max(0.0, sw1 * 0.98 - 2), 2),
+           "switchRailDisp3": round(max(0.0, sw1 * 0.96 - 4), 2),
+           "pointRailDisp2": round(max(0.0, pr1 * 0.97 - 2), 2)}
+    for f in ADAPT_FIELDS:
+        if f not in row or row[f] is None:
+            msg[f] = gen[f]
+            sim.append(f)
+    return msg, sim
 
 
-async def handler(websocket, path=None):  # path 参数兼容旧版 websockets
-    """单个客户端的推送协程：循环推送，客户端断开后结束。"""
+def build_message(row, seq, rnd):
+    msg, sim = adapt_row(row)
+    sim_t = float(row["time"])
+    tstr = (BASE_TS + timedelta(seconds=sim_t)).strftime(TIME_FMT)[:-3]
+    msg.update({
+        "seq": seq,                  # 全局递增序号（新鲜度判据）
+        "round": rnd,                # 回放轮次（从1起，循环归零不混淆）
+        "simTime": sim_t,            # 仿真时间（秒）
+        "time": sim_t,               # 兼容旧契约的数值时间
+        "sendTs": int(time.time() * 1000),   # 发送时刻（墙钟毫秒）
+        "timeStr": tstr,             # 时间字符串（页面格式，配置可调）
+    })
+    if sim:
+        msg["simFields"] = sim       # 明确标注：这些通道为模拟生成
+    return msg
+
+
+async def handler(websocket, path=None):
+    """每个客户端独立连接；断开互不影响，可随时重连（整改令第4条）。"""
+    global SEQ_TOTAL
     peer = getattr(websocket, "remote_address", None)
     print(f"[连接] 客户端上线：{peer}")
+    rnd = 0
     try:
-        loop_count = 0
         while True:
-            loop_count += 1
-            print(f"[推送] {peer} 第 {loop_count} 轮开始，共 {len(ROWS)} 条")
+            rnd += 1
+            print(f"[推送] {peer} 第 {rnd} 轮开始（{len(ROWS)} 条/轮）")
             t0 = asyncio.get_running_loop().time()
             for i, row in enumerate(ROWS):
-                # 按绝对时刻对齐节奏，抵消 send 本身的耗时，避免越推越慢
-                target = t0 + i * STEP_SECONDS
-                await asyncio.sleep(max(0, target - asyncio.get_running_loop().time()))
-                await websocket.send(json.dumps(row, ensure_ascii=False))
+                # 绝对时刻对齐；轮结束后下一轮首帧至少再等一个步长，
+                # 杜绝循环交界两帧瞬发（整改令第3条）
+                target = t0 + i * STEP
+                now = asyncio.get_running_loop().time()
+                if now < target:
+                    await asyncio.sleep(target - now)
+                else:
+                    await asyncio.sleep(0)
+                SEQ_TOTAL += 1
+                await websocket.send(json.dumps(
+                    build_message(row, SEQ_TOTAL, rnd), ensure_ascii=False))
+            # 本轮完：强制额外间隔一个步长再进下一轮
+            await asyncio.sleep(STEP)
     except ConnectionClosed:
-        print(f"[断开] 客户端下线：{peer}")
+        print(f"[断开] 客户端下线：{peer}（服务保持运行，可重连）")
 
 
-async def main(port):
+async def main(port, path):
     stop = asyncio.Event()
     async with serve(handler, "0.0.0.0", port):
-        print(f"[服务] WebSocket 推送服务已启动，端口 {port}")
-        print(f"[服务] 本机测试地址 ws://localhost:{port}，等待 C 的页面连接（Ctrl+C 停止）")
+        print(f"[服务] 已启动 端口{port} 数据={os.path.basename(path)} "
+              f"(Ctrl+C 停止)")
+        print(f"[服务] 本机测试：ws://localhost:{port}；跨机用本机IPv4")
         await stop.wait()
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="按 0.1s 步长循环推送契约数据")
-    parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--dataset", default=None, metavar="工况",
-                        help=f"推送扩展数据集v2 指定工况（{'/'.join(CONDITIONS)}），"
-                             f"默认推送 data.json 基础契约数据")
+    parser = argparse.ArgumentParser(description="数据推送服务 v2（3002）")
+    parser.add_argument("--file", default=DATA_FILE)
+    parser.add_argument("--port", type=int, default=WS_PORT)
     args = parser.parse_args()
-    ROWS.extend(load_dataset(args.dataset) if args.dataset else load_data())
+    ROWS.extend(load_and_validate(args.file))
     try:
-        asyncio.run(main(args.port))
+        asyncio.run(main(args.port, args.file))
     except KeyboardInterrupt:
         print("\n[服务] 已停止")

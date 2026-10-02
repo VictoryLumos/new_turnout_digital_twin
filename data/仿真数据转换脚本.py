@@ -1,124 +1,83 @@
 # -*- coding: utf-8 -*-
-"""
-道岔数字孪生 —— 仿真数据转换脚本（B：数据管道线，v2 对齐契约 v2.0）
+r"""
+道岔数字孪生 —— 仿真数据转换脚本（B：数据管道线，stdout 版）
 
-作用：
-    把 A 的 UM / MATLAB 导出的仿真 CSV 转成接口契约格式的 JSON，
-    转完自动校验：必选字段齐全、步长均匀、无缺行、无非数值。
-    转好的文件可直接替换 data.json 联调，或用 db/02_数据导入脚本.py 入库。
+把 A 的 UM 或 MATLAB 导出的仿真 CSV 转成契约 JSON，结果打印到标准输出；
+需要保存时用重定向（示例见下）。逐行校验字段、数值类型与步长均匀性，
+非法行立即报错并定位行号，不输出非法 JSON。
 
-契约 v2.0 字段支持：
-    - 必选 3 字段：time / switchRailDisp1 / pointRailDisp1（v1.0 冻结）
-    - 可选 17 字段：电流/功率/锁闭/密贴/三牵引点位移/力/振动/磨耗/轮轨力等
-      （见下方 KNOWN_OPTIONAL）；CSV 里有哪列就带哪列，没有就跳过
-    - 未知列名：忽略并列出（不静默丢弃，方便发现 A 的列名拼写差异）
+用法（命令行）：
+    python 仿真数据转换脚本.py --file 输入.csv > 输出.json
+    python 仿真数据转换脚本.py --file 输入.csv --step 0.01 > 输出.json
 
-用法：
-    python 仿真数据转换脚本.py --file um_data.csv             # 输出 um_data.json
-    python 仿真数据转换脚本.py --file um_data.csv --out 新数据.json
-    python 仿真数据转换脚本.py --file um_data.csv --step 0.01  # UM 步长不是0.1s时指定
-
-A 的 CSV 要求：
-    - 第一行为表头；必含一个时间列 + 两个位移列（列名见下方 CONFIG）
-    - 时间单位秒，位移单位毫米；可选列名与契约 v2.0 字段一致
-    - 时间步长均匀（缺行/乱序会报错，不会静默出错数据）
-
-A 首次交付数据后，若列名与 CONFIG 不一致，只改 CONFIG 三个名字即可，其余不动。
+输入要求：首行为表头，含时间列与两路位移列（列名在下方 CONFIG 调整）；
+时间为秒、位移为毫米、步长均匀。A 首次交付后只需改 CONFIG 三个列名。
 """
 import argparse
 import csv
 import json
-import os
 import sys
 
 # ===== CONFIG：列名映射（按 A 实际导出格式调整，改完群通知）=====
-TIME_COL = "time"               # 时间列（秒）
-SWITCH_COL = "switchRailDisp1"  # 尖轨位移列（mm）
-POINT_COL = "pointRailDisp1"    # 心轨位移列（mm）
+TIME_COL = "time"
+SWITCH_COL = "switchRailDisp1"
+POINT_COL = "pointRailDisp1"
 
-# ===== 契约 v2.0 可选字段（与测点编码一一对应，出现即转换）=====
-KNOWN_OPTIONAL = [
-    "switchRailDisp2", "switchRailDisp3",
-    "switchRailForce1", "switchRailForce2", "switchRailForce3",
-    "pointRailDisp2", "pointRailForce1", "pointRailForce2",
-    "switchMachineCurrent", "switchMachinePower",
-    "lockStatus", "closeStatus",
-    "frogVibration", "frogWear",
-    "wheelRailForceLateral", "wheelRailForceVertical",
-    "guardRailDisp", "railTemperature",
-]
-
-STEP = 0.1        # 契约步长（秒），可用 --step 临时覆盖
-DECIMALS = 2      # 数值保留小数位
+STEP = 0.1
+DECIMALS = 2
 
 
-def convert(csv_path, out_path, step):
-    with open(csv_path, encoding="utf-8-sig", newline="") as f:  # utf-8-sig 兼容 Excel 导出的 BOM
+def convert(rows_iter, step):
+    out = []
+    prev_t = None
+    for i, r in enumerate(rows_iter):
+        line = i + 2  # 含表头
+        try:
+            t = round(float(r[TIME_COL]), 3)
+            sw = round(float(r[SWITCH_COL]), DECIMALS)
+            pr = round(float(r[POINT_COL]), DECIMALS)
+        except (ValueError, TypeError, KeyError) as e:
+            sys.exit(f"[失败] 第 {line} 行数值解析失败：{e}")
+        if prev_t is not None:
+            delta = round(t - prev_t, 6)
+            if abs(delta - step) > 1e-6:
+                sys.exit(f"[失败] 第 {line} 行步长 {delta}s 与要求 {step}s 不符"
+                         f"（前一行 t={prev_t}）。数据缺行或步长不匀，"
+                         f"请 A 重新导出，或用 --step 指定实际步长。")
+        prev_t = t
+        out.append({"time": t, "switchRailDisp1": sw, "pointRailDisp1": pr})
+    return out
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="仿真CSV转契约JSON（结果打到stdout，用重定向保存）")
+    parser.add_argument("--file", required=True, help="输入CSV路径")
+    parser.add_argument("--step", type=float, default=STEP,
+                        help=f"时间步长（默认 {STEP}s）")
+    args = parser.parse_args()
+
+    with open(args.file, encoding="utf-8-sig", newline="") as f:  # 只读输入
         reader = csv.DictReader(f)
         header = reader.fieldnames or []
         for col in (TIME_COL, SWITCH_COL, POINT_COL):
             if col not in header:
-                sys.exit(f"[失败] CSV 里找不到必选列 '{col}'。实际表头是 {header}。\n"
-                         f"        请把脚本顶部 CONFIG 的三个列名改成 A 实际导出的名字。")
-        opt_cols = [c for c in KNOWN_OPTIONAL if c in header]
-        unknown = [c for c in header
-                   if c not in opt_cols + [TIME_COL, SWITCH_COL, POINT_COL]]
+                sys.exit(f"[失败] CSV 缺少列 {col}；实际表头 {header}。"
+                         f"请把脚本顶部 CONFIG 改成 A 实际列名。")
         rows = list(reader)
-
     if not rows:
         sys.exit("[失败] CSV 没有数据行")
 
-    # 解析 + 契约校验
-    out = []
-    prev_t = None
-    for i, r in enumerate(rows):
-        try:
-            t = round(float(r[TIME_COL]), 3)
-            row = {"time": t,
-                   "switchRailDisp1": round(float(r[SWITCH_COL]), DECIMALS),
-                   "pointRailDisp1": round(float(r[POINT_COL]), DECIMALS)}
-            for c in opt_cols:
-                row[c] = round(float(r[c]), DECIMALS)
-        except ValueError as e:
-            sys.exit(f"[失败] 第 {i + 2} 行有非数值内容：{e}")
-        if prev_t is not None:
-            delta = round(t - prev_t, 6)
-            if abs(delta - step) > 1e-6:
-                sys.exit(f"[失败] 第 {i + 2} 行步长 {delta}s ≠ {step}s（前一行 t={prev_t}）。"
-                         f"数据缺行或步长不匀，请 A 重新导出，或用 --step 指定实际步长。")
-        prev_t = t
-        out.append(row)
-
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False, indent=2)
-
+    out = convert(rows, args.step)
+    # 摘要走 stderr，stdout 只输出纯净 JSON（便于重定向与后续校验/入库）
     sw_max = max(r["switchRailDisp1"] for r in out)
     pr_max = max(r["pointRailDisp1"] for r in out)
-    print(f"[成功] {len(out)} 条已转换 -> {os.path.basename(out_path)}")
-    print(f"       时间 {out[0]['time']}~{out[-1]['time']}s，步长 {step}s，"
-          f"字段 {len(out[0])} 个（必选3 + 可选{len(opt_cols)}）")
-    if opt_cols:
-        print(f"       带出的可选字段：{', '.join(opt_cols)}")
-    if unknown:
-        print(f"       [注意] 以下列不在契约 v2.0 字段表内，已忽略：{', '.join(unknown)}"
-              f"（若是拼写差异请对照 docs/数据格式约定_v2.0_草案.md 第2节修正）")
-    print(f"       尖轨最大 {sw_max} mm（阈值150，{'会超限' if sw_max > 150 else '不超限'}）；"
-          f"心轨最大 {pr_max} mm（阈值100，{'会超限' if pr_max > 100 else '不超限'}）")
-    print(f"       首条 {json.dumps(out[0], ensure_ascii=False)}")
-    print("[提醒] 替换 data/data.json 前先群通知；入库用 db/02_数据导入脚本.py --file 本文件")
-
-
-def main():
-    parser = argparse.ArgumentParser(description="UM/MATLAB 仿真 CSV → 契约 JSON")
-    parser.add_argument("--file", required=True, help="输入 CSV 路径")
-    parser.add_argument("--out", default=None, help="输出 JSON 路径（默认与 CSV 同名）")
-    parser.add_argument("--step", type=float, default=STEP, help=f"时间步长（默认 {STEP}s）")
-    args = parser.parse_args()
-
-    if not os.path.exists(args.file):
-        sys.exit(f"[失败] 找不到文件 {args.file}")
-    out_path = args.out or os.path.splitext(args.file)[0] + ".json"
-    convert(args.file, out_path, args.step)
+    print(f"[成功] {len(out)} 条；时间 {out[0]['time']}~{out[-1]['time']}s；"
+          f"尖轨峰值 {sw_max}mm（阈值150，{'会超限' if sw_max > 150 else '不超限'}）、"
+          f"心轨峰值 {pr_max}mm（阈值100，{'会超限' if pr_max > 100 else '不超限'}）；"
+          f"保存示例：python 仿真数据转换脚本.py --file 输入.csv > 目标.json",
+          file=sys.stderr)
+    print(json.dumps(out, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

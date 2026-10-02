@@ -62,12 +62,19 @@ check("告警审计（alarm_event + 入库触发器）", has_trg and has_evt,
       "超阈值数据入库即自动留痕" if has_trg and has_evt else "缺触发器或审计表，先执行 05 升级脚本")
 
 # ---- 2) 数据分布 ----
-tables = ("component", "measurement_point", "timeseries_data",
-          "work_order", "realtime_value", "alarm_event")
-counts = {}
-for t in tables:
-    cur.execute(f"SELECT count(*) FROM {t}")
-    counts[t] = cur.fetchone()[0]
+counts = {}   # 六张表行数逐一常量查询（表名为本文件固定名，不做拼接）
+cur.execute("SELECT count(*) FROM component")
+counts["component"] = cur.fetchone()[0]
+cur.execute("SELECT count(*) FROM measurement_point")
+counts["measurement_point"] = cur.fetchone()[0]
+cur.execute("SELECT count(*) FROM timeseries_data")
+counts["timeseries_data"] = cur.fetchone()[0]
+cur.execute("SELECT count(*) FROM work_order")
+counts["work_order"] = cur.fetchone()[0]
+cur.execute("SELECT count(*) FROM realtime_value")
+counts["realtime_value"] = cur.fetchone()[0]
+cur.execute("SELECT count(*) FROM alarm_event")
+counts["alarm_event"] = cur.fetchone()[0]
 check("六张表行数", counts["timeseries_data"] >= 30000 and counts["measurement_point"] == 20,
       " ".join(f"{k}={v}" for k, v in counts.items()))
 cur.execute("SELECT source, rows_total, alarm_rows FROM v_source_stats ORDER BY ts_min")
@@ -86,23 +93,23 @@ with_th, total = cur.fetchone()
 check("阈值覆盖率", with_th >= 2,
       f"{with_th}/{total} 测点已定阈（其余待 A 确认编码映射后冻结，契约 v2.0 第2节）")
 
-# ---- 4) 性能：EXPLAIN ANALYZE 真实执行 ----
-def explain(sql):
-    cur.execute("EXPLAIN (ANALYZE, TIMING OFF) " + sql)
+# ---- 4) 性能：EXPLAIN ANALYZE 真实执行（语句为常量字面量，不接受外部拼接） ----
+def read_plan():
     plan = "\n".join(r[0] for r in cur.fetchall())
     ms = re.search(r"Execution Time: ([\d.]+) ms", plan)
     return float(ms.group(1)) if ms else -1, plan
 
-ms1, plan1 = explain(
-    "SELECT * FROM timeseries_data WHERE point_code='T01-SR-01-DISP' "
-    "ORDER BY ts DESC LIMIT 500")
+cur.execute("EXPLAIN (ANALYZE, TIMING OFF) SELECT * FROM timeseries_data "
+            "WHERE point_code='T01-SR-01-DISP' ORDER BY ts DESC LIMIT 500")
+ms1, plan1 = read_plan()
 used_idx1 = "Index Scan" in plan1 or "index" in plan1.lower()
 check("历史查询执行计划（/api/history 同款）", used_idx1 and ms1 < 50,
       f"{ms1} ms，{'走索引' if used_idx1 else '全表扫描'}")
 
-ms2, plan2 = explain(
-    "SELECT source, count(*) FROM timeseries_data d JOIN measurement_point p "
-    "USING(point_code) WHERE d.value > p.alarm_threshold GROUP BY source")
+cur.execute("EXPLAIN (ANALYZE, TIMING OFF) SELECT source, count(*) FROM timeseries_data d "
+            "JOIN measurement_point p USING(point_code) WHERE d.value > p.alarm_threshold "
+            "GROUP BY source")
+ms2, plan2 = read_plan()
 check("超阈统计执行计划（告警联查）", ms2 < 100, f"{ms2} ms")
 
 # ---- 5) 实例健康：缓存命中率 ----
