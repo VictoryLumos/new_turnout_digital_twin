@@ -174,9 +174,8 @@ def playback(condition):
                 _play["t"] = r["time"]
                 for it in issues:
                     ensure_work_order(it["关联测点"], it["规则"], issued)
-            except Exception:
-                import traceback
-                traceback.print_exc()
+            except Exception as e:  # noqa: BLE001 停机等异常：本帧暂缓，下一帧续写
+                print(f"  [回放暂缓] {type(e).__name__}: {e}（自动重试，回放不中断）")
             if int(r["time"] * 10) % 10 == 0:
                 mark = f"{score:.0f}({grade})" if score is not None else "(无数据)"
                 print(f"  [回放] t={r['time']:>4.1f}s 健康度={mark}")
@@ -211,8 +210,10 @@ button{{background:#2563eb;border:0;color:#fff;border-radius:6px;padding:3px 10p
 <div class="c"><b>行为模型回放</b>（点击注入工况，观察健康度与工单联动）：<br><br>{conds}
 <a href="javascript:fetch('/api/stop').then(r=>r.json()).then(loadAll)">停止</a></div>
 <div class="c"><b>工单看板</b>（告警自动生成 → 维修闭环 → 复测恢复）：<div id="wos" class="wos">加载中…</div></div>
+<div class="c"><b>告警变化记录</b>（何时超限 → 何测点 → 峰值 → 何时恢复；事件段视图）：<div id="aev" class="wos">加载中…</div>
+<div style="font-size:12px;color:#475569;margin-top:4px">数据来自 v_fault_episodes（超阈按30秒聚合），JSON 接口：<a href="/api/alarm-events">/api/alarm-events</a></div></div>
 <div class="c"><b>接口清单</b><br>
-<a href="/trend">📈 趋势回放页（/trend）</a> · <a href="/api/diagnosis">诊断（/api/diagnosis）</a><br>
+<a href="/trend">📈 趋势回放页（/trend）</a> · <a href="/trend5">🛤 五路位移总览（/trend5）</a> · <a href="/api/diagnosis">诊断（/api/diagnosis）</a> · <a href="/api/alarm-events">告警变化（/api/alarm-events）</a><br>
 GET /api/realtime 实时监测 · GET /api/alarms 告警 · GET /api/health 健康度<br>
 GET /api/workorders 工单 · GET /api/history/测点编码?limit=n 历史查询 · GET /api/points 测点清单<br>
 GET /api/conditions 数据集 · POST /api/play/工况 · POST /api/repair/工单号 · POST /api/stop</div>
@@ -238,8 +239,17 @@ document.getElementById('wos').innerHTML=open.length?
 open.map(w=>'<div>'+w.工单号+' · '+w.测点+' · '+w.备注+
 ' <button onclick="repair(\\''+w.工单号+'\\')">维修闭环</button></div>').join('')
 :'暂无未闭环工单（全部已闭环或尚未发生告警）'}})}}
-function loadAll(){{load();loadWos()}}
-setInterval(load,2000);setInterval(loadWos,5000);loadAll();
+function loadAev(){{
+fetch('/api/alarm-events?limit=8').then(r=>r.json()).then(d=>{{
+const list=d.告警变化||[];
+document.getElementById('aev').innerHTML=list.length?
+list.map(a=>'<div>'+String(a.何时超限).replace('T',' ').slice(5,23)+' 超限 <b>'+a.字段+
+'</b> 峰值 '+a.超限峰值mm+'mm（阈值'+a.阈值mm+'） → '+
+(a.何时恢复==='未恢复（仍在超限）'?'<span style="color:#f87171">未恢复</span>':
+String(a.何时恢复).replace('T',' ').slice(5,23)+' 恢复（'+a.持续秒.toFixed(1)+'s）')+'</div>').join('')
+:'暂无告警记录（未发生超限）'}}).catch(()=>{{}})}}
+function loadAll(){{load();loadWos();loadAev()}}
+setInterval(load,2000);setInterval(loadWos,5000);setInterval(loadAev,5000);loadAll();
 </script></body></html>""")
 
 
@@ -263,6 +273,42 @@ def api_alarms():
     return {"count": len(rows), "告警": [
         {"测点": p, "字段": f, "当前值": float(v), "阈值": th, "单位": u}
         for p, f, v, th, u in rows]}
+
+
+@app.get("/api/alarm-events")
+def api_alarm_events(point_code: str = None, limit: int = 100):
+    """告警变化记录（整改第三轮页面①）：何时超限、哪个测点、当时数值(峰值)、何时恢复。
+
+    数据来自 v_fault_episodes（05 升级视图：超阈记录按 30 秒聚合为事件段），
+    每段 = 一次"超限 → 恢复"全过程；end_ts 为空表示仍在超限（未恢复）。
+    """
+    cond = ["1=1"]
+    params = []
+    if point_code:
+        cond.append("point_code = %s")
+        params.append(point_code)
+    params.append(max(1, min(limit, 500)))
+    # WHERE 片段为固定字面量集合，筛选值全部经 %s 参数绑定
+    sql_txt = ("SELECT point_code, start_ts, end_ts, peak_value, threshold, "
+               "source, duration_s FROM v_fault_episodes WHERE "
+               + " AND ".join(cond) + " ORDER BY start_ts DESC LIMIT %s")
+    rows = q(sql_txt, params)
+    name_of = {v: k for k, v in FIELD_TO_POINT.items()}
+    tz8 = timezone(timedelta(hours=8))
+
+    def fmt(t):
+        if t is None:
+            return None
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=tz8)
+        return t.astimezone(tz8).isoformat(timespec="milliseconds")
+
+    return {"count": len(rows), "告警变化": [
+        {"测点": p, "字段": name_of.get(p, p),
+         "何时超限": fmt(s), "超限峰值mm": float(v), "阈值mm": float(th),
+         "何时恢复": fmt(e) if e is not None else "未恢复（仍在超限）",
+         "持续秒": float(d) if d is not None else None, "来源": src}
+        for p, s, e, v, th, src, d in rows]}
 
 
 @app.get("/api/health")
@@ -448,7 +494,7 @@ canvas{{width:100%;height:340px;display:block}}
 时段：<select id="src" onchange="load()"><option value="all">全部（四工况）</option><option value="仿真-正常转换">正常转换</option><option value="仿真-卡阻">卡阻</option><option value="仿真-密贴不良">密贴不良</option><option value="仿真-锁闭失败">锁闭失败</option><option value="仿真-告警演示">告警演示</option><option value="fake">基础版假数据</option></select>
 <button onclick="load()">刷新</button>
 <button id="pb" onclick="togglePlay()">▶ 回放</button>
-<select id="spd"><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option></select>
+<select id="spd"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1">1×</option><option value="2" selected>2×</option><option value="4">4×</option></select>
 <span id="cur">--</span>
 <div id="info">加载中…</div></div>
 <div class="c"><canvas id="cv"></canvas></div>
@@ -496,7 +542,8 @@ ctx.textAlign='center';ctx.fillStyle='#475569';
 [0,.5,1].forEach(f=>{{const m=T0+SPAN*f;ctx.fillText(((m/60)|0)+':'+String(Math.round(m%60)).padStart(2,'0'),X(m),H-8)}});
 }}
 function togglePlay(){{
-if(timer){{stopPlay();return}}
+if(timer){{stopPlay();
+document.getElementById('cur').textContent='⏸ 回放已暂停 · '+ROWS[idx].值+'mm @ '+ROWS[idx].时刻+'（点 ▶ 继续）';return}}
 if(!ROWS.length)return;
 idx=0;const spd=+document.getElementById('spd').value||2;
 document.getElementById('pb').textContent='⏸ 暂停';
@@ -510,6 +557,97 @@ function stopPlay(){{if(timer){{clearInterval(timer);timer=null}}
 const b=document.getElementById('pb');if(b)b.textContent='▶ 回放'}}
 window.addEventListener('load',load);
 fit();load();
+</script></body></html>""")
+
+
+@app.get("/trend5", response_class=HTMLResponse)
+def trend5():
+    """五路位移趋势总览（整改第三轮页面②）：五条曲线 + 演示阈值 + 模型节点标注。"""
+    th_json = json.dumps({"switch": 150.0, "point": 100.0})
+    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>道岔数字孪生 · 五路位移总览</title>
+<style>body{{font-family:"Microsoft YaHei";background:#0b1220;color:#e2e8f0;padding:20px 24px}}
+.c{{background:#111c30;border:1px solid #1e2f4d;border-radius:12px;padding:14px 18px;max-width:1100px;margin-bottom:12px}}
+select,button{{background:#0b1220;color:#e2e8f0;border:1px solid #1e2f4d;border-radius:6px;padding:5px 10px}}
+canvas{{width:100%;height:400px;display:block}}
+#info{{font-size:13px;color:#64748b;margin-top:8px}}
+#cur{{font-size:15px;color:#fbbf24;font-weight:bold}}
+.lg{{font-size:13px;margin-right:14px}}</style></head><body>
+<h1 style="font-size:19px">道岔数字孪生 · 五路位移总览（尖轨3路 + 心轨2路 · 含演示阈值与模型节点）</h1>
+<div class="c">时段：<select id="src" onchange="load()">
+<option value="仿真-告警演示" selected>告警演示（推荐讲解）</option>
+<option value="仿真-正常转换">正常转换</option><option value="仿真-卡阻">卡阻</option>
+<option value="仿真-密贴不良">密贴不良</option><option value="仿真-锁闭失败">锁闭失败</option>
+<option value="all">全部来源</option></select>
+<button onclick="load()">刷新</button>
+<button id="pb" onclick="togglePlay()">▶ 回放</button>
+<select id="spd"><option value="0.25">0.25×</option><option value="0.5" selected>0.5×</option><option value="1">1×</option><option value="2">2×</option></select>
+<span id="cur">--</span>
+<div id="info" style="margin-top:6px">
+<span class="lg" style="color:#38bdf8">━ SwitchRail·第1牵引点 160mm</span>
+<span class="lg" style="color:#60a5fa">━ SwitchRail·第2牵引点 118mm</span>
+<span class="lg" style="color:#93c5fd">━ SwitchRail·第3牵引点 75mm</span>
+<span class="lg" style="color:#fbbf24">━ PointRail·第1牵引点 100.6mm</span>
+<span class="lg" style="color:#f59e0b">━ PointRail·第2牵引点 55.5mm</span>
+<span class="lg" style="color:#ef4444">╌ 演示阈值 尖轨&gt;150 / 心轨&gt;100（严格大于才告警）</span></div>
+<div id="info2" style="font-size:12px;color:#475569;margin-top:4px">五路=同一根尖轨的三个牵引点+同一根心轨的两个牵引点（第二牵引点≠第二根钢轨）；设计动程为设计参数，非故障限值。粗字标注=模拟通道来源见推送 simFields。</div>
+<div id="info">加载中…</div></div>
+<div class="c"><canvas id="cv"></canvas></div>
+<script>const TH={th_json};
+const CH=[
+{{p:'T01-SR-01-DISP',f:'switchRailDisp1',c:'#38bdffaa',w:2.2,node:'SwitchRail·第1牵引点',th:150}},
+{{p:'T01-SR-02-DISP',f:'switchRailDisp2',c:'#60a5fa99',w:1.6,node:'SwitchRail·第2牵引点',th:null}},
+{{p:'T01-SR-03-DISP',f:'switchRailDisp3',c:'#93c5fd88',w:1.6,node:'SwitchRail·第3牵引点',th:null}},
+{{p:'T01-PR-01-DISP',f:'pointRailDisp1',c:'#fbbf24aa',w:2.2,node:'PointRail·第1牵引点',th:100}},
+{{p:'T01-PR-02-DISP',f:'pointRailDisp2',c:'#f59e0b88',w:1.6,node:'PointRail·第2牵引点',th:null}}];
+const cv=document.getElementById('cv');
+let S=[],T0=0,SPAN=1,idx=0,timer=null;
+function fit(){{cv.width=cv.clientWidth*(devicePixelRatio||1);cv.height=cv.clientHeight*(devicePixelRatio||1)}}
+addEventListener('resize',()=>{{fit();draw()}});
+async function load(){{
+fit();stopPlay();
+const s=document.getElementById('src').value;
+S=await Promise.all(CH.map(ch=>fetch('/api/history/'+ch.p+'?limit=2000'+(s!=='all'?'&source='+encodeURIComponent(s):'')).then(r=>r.json()).then(d=>d.数据||[])));
+if(!S[0].length){{document.getElementById('info').textContent='该时段暂无数据';S=[];return}}
+const mm=x=>{{const a=x.时刻.split(':');return +a[0]*60+ +a[1]+ +a[2]/60}};
+const all=S.flat().map(x=>mm(x));
+T0=Math.min(...all);SPAN=Math.max(Math.max(...all)-T0,0.1);
+idx=S[0].length-1;draw();
+document.getElementById('info').textContent='共 '+S[0].length+' 帧 · '+S[0][0].日期+' '+S[0][0].时刻+' ~ '+S[0][S[0].length-1].时刻+'（五路同轴）';
+}}
+function draw(){{
+const ctx=cv.getContext('2d'),W=cv.width,H=cv.height,dpr=devicePixelRatio||1;
+ctx.clearRect(0,0,W,H);if(!S.length||!S[0].length)return;
+const PL=52,PR=12,PT=14,PB=26,pw=W-PL-PR,ph=H-PT-PB,YM=185;
+const X=t=>PL+pw*(t-T0)/SPAN,Y=v=>PT+ph*(1-v/YM);
+ctx.strokeStyle='#1e2f4d';ctx.fillStyle='#64748b';ctx.font=(10*dpr)+'px sans-serif';
+for(let v=0;v<=180;v+=30){{ctx.beginPath();ctx.moveTo(PL,Y(v));ctx.lineTo(W-PR,Y(v));ctx.stroke();ctx.textAlign='right';ctx.fillText(v+'',PL-6,Y(v)+3*dpr)}}
+ctx.setLineDash([6,4]);ctx.strokeStyle='#ef4444';
+[TH.switch,TH.point].forEach(v=>{{ctx.beginPath();ctx.moveTo(PL,Y(v));ctx.lineTo(W-PR,Y(v));ctx.stroke();ctx.fillText('阈值'+v,PL+4*dpr,Y(v)-4*dpr)}});
+ctx.setLineDash([]);ctx.textAlign='left';
+S.forEach((rows,si)=>{{
+const ch=CH[si];const mm=x=>{{const a=x.时刻.split(':');return +a[0]*60+ +a[1]+ +a[2]/60}};
+ctx.beginPath();ctx.strokeStyle=ch.c;ctx.lineWidth=ch.w*dpr;
+for(let i=0;i<=Math.min(idx,rows.length-1);i++){{const x=X(mm(rows[i])),y=Y(rows[i].值);i?ctx.lineTo(x,y):ctx.moveTo(x,y)}}
+ctx.stroke();
+if(si===0&&rows[idx]){{const x=X(mm(rows[idx])),y=Y(rows[idx].值);
+ctx.beginPath();ctx.arc(x,y,4.5*dpr,0,7);ctx.fillStyle='#fde047';ctx.fill();
+ctx.strokeStyle='#0b1220';ctx.lineWidth=1;ctx.stroke();}}
+}});
+const cur=document.getElementById('cur');
+cur.textContent='光标帧：'+CH.map((ch,i)=>S[i][idx]?ch.node.split('·')[1]+(S[i][idx].值).toFixed(1):'--').join(' / ')+' mm';
+ctx.textAlign='center';ctx.fillStyle='#475569';
+[0,.25,.5,.75,1].forEach(f=>{{const m=T0+SPAN*f;const h=(m/60)|0,mi=Math.round(m%60);ctx.fillText(h+':'+String(mi).padStart(2,'0'),X(m),H-8)}});
+}}
+function togglePlay(){{
+if(timer){{stopPlay();
+document.getElementById('cur').textContent='⏸ 回放已暂停 · '+document.getElementById('cur').textContent.slice(4)+'（点 ▶ 继续）';return}}
+if(!S.length)return;idx=0;const spd=+document.getElementById('spd').value||0.5;
+document.getElementById('pb').textContent='⏸ 暂停';
+timer=setInterval(()=>{{idx++;if(idx>=S[0].length-1){{idx=S[0].length-1;draw();stopPlay();return}}draw()}},100/spd);}}
+function stopPlay(){{if(timer){{clearInterval(timer);timer=null}}
+const b=document.getElementById('pb');if(b)b.textContent='▶ 回放'}}
+window.addEventListener('load',load);fit();load();
 </script></body></html>""")
 
 

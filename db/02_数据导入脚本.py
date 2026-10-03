@@ -26,11 +26,13 @@ from datetime import datetime, timedelta, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "data"))
-from 管道公共 import db_session, validate_rows, format_errors  # noqa: E402
+from 管道公共 import (db_session, validate_rows, format_errors,  # noqa: E402
+                     EXTRA_CHECK_FIELDS)
 
 BASE_REQUIRED = ["time", "switchRailDisp1", "pointRailDisp1"]
-# 五路中可选三路：出现即校验（NaN/Inf/字符串/null 拒绝，整改第二轮第2条）
-EXTRA_FIELDS = ["switchRailDisp2", "switchRailDisp3", "pointRailDisp2"]
+# 三路位移可选 + 全部扩展遥测字段"出现即校验"（整改第三轮第2条：
+# 转换力/电流等所有将入库字段遇非法值一律拒绝，定位行号+字段）
+EXTRA_FIELDS = EXTRA_CHECK_FIELDS
 
 # 数据字段 → 测点编码（《完整版》映射表全量 20 项）
 FIELD_TO_POINT = {
@@ -91,8 +93,9 @@ def main():
         sys.exit(1)
     print(f"[校验] 通过：{len(good)} 条（{args.file}）")
 
-    # 2) 批次与时间轴（同批次重导幂等：复用该批次既有时间轴，
-    #    (测点,时间) 冲突自动跳过 → 不新增重复记录；不同批次正常错峰共存）
+    # 2) 批次与时间轴（同批次重导幂等：按"批次首条时刻-数据集起始秒"对齐
+    #    恢复首次导入的 base，(测点,时间) 冲突自动跳过 → 不新增重复记录；
+    #    数据 time 从 10s 起等非零起点同样对齐；不同批次正常错峰共存）
     batch = args.batch or datetime.now().strftime("IMP-%Y%m%d-%H%M")
     if args.base:
         base = datetime.strptime(args.base, "%Y-%m-%d %H:%M:%S").replace(
@@ -103,9 +106,12 @@ def main():
                         (batch,))
             row = cur.fetchone()
         if row and row[0] is not None:
-            base = row[0].astimezone(timezone(timedelta(hours=8)))
-            print(f"[幂等] 批次 {batch} 已存在（{row[0]} 起）：复用其时间轴，"
-                  "重导不新增重复记录")
+            file_t0 = min(float(r["time"]) for r in good)
+            base = row[0].astimezone(timezone(timedelta(hours=8))) \
+                - timedelta(seconds=file_t0)
+            print(f"[幂等] 批次 {batch} 已存在：按首次导入时间轴对齐"
+                  f"（数据集起点 t={file_t0}s → 本批 base="
+                  f"{base:%Y-%m-%d %H:%M:%S}），重导不新增重复记录")
         else:
             base = next_free_hour()
     print(f"[批次] source={args.source} batch={batch} 时间轴起点={base:%Y-%m-%d %H:%M}")

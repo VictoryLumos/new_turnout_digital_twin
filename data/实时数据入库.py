@@ -36,14 +36,13 @@ from datetime import datetime, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from 管道公共 import load_dataset, ResilientDB, TZ8  # noqa: E402
+from 管道公共 import load_dataset, ResilientDB, TZ8, EXTRA_CHECK_FIELDS  # noqa: E402
 
 DATA_FILE = os.path.join(HERE, "data.json")
 STEP = 0.1
 
-# 必填两路 + 出现即校验的三路（与推送服务同一判据）
+# 必填两路；其余全部已知字段（三路位移可选 + 扩展遥测）"出现即校验"
 BASE_REQUIRED = ["time", "switchRailDisp1", "pointRailDisp1"]
-ADAPT_FIELDS = ["switchRailDisp2", "switchRailDisp3", "pointRailDisp2"]
 
 # 数据字段 → 测点编码（五路位移；与 数据服务API.py 保持一致）
 FIELD_TO_POINT = {
@@ -60,7 +59,7 @@ BASE_TS = datetime(2026, 9, 26, 0, 0, 0, tzinfo=TZ8)
 
 def main():
     rows = load_dataset(DATA_FILE, required=BASE_REQUIRED,
-                        extra_fields=ADAPT_FIELDS)   # 非法直接 exit 1
+                        extra_fields=EXTRA_CHECK_FIELDS)   # 非法直接 exit 1
 
     rdb = ResilientDB()   # 长连接：断线自动重连重试（管道公共）
 
@@ -90,7 +89,13 @@ def main():
                         "value = EXCLUDED.value, ts = EXCLUDED.ts, "
                         "alarm = EXCLUDED.alarm, updated_at = now()",
                         (point, value, _ts, alarm))
-            rdb.run(_flush)
+            try:
+                rdb.run(_flush)
+            except Exception as e:  # noqa: BLE001 数据库停机：本帧暂缓，恢复后续写
+                print(f"  [入库暂缓] 数据库暂不可用：{e}（自动重试中，进程不退出）")
+                time.sleep(1.0)
+                i += 1
+                continue
             if i % 10 == 0:  # 每 1 秒打一行心跳，别刷屏
                 print(f"  t={r['time']:>4.1f}s  尖轨={r['switchRailDisp1']:>7.2f}mm  "
                       f"心轨={r['pointRailDisp1']:>6.2f}mm"

@@ -37,7 +37,8 @@ from datetime import datetime
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from 管道公共 import (CONFIG, STEP, WS_PORT, validate_rows,  # noqa: E402
-                     format_errors, now_iso_utc, TZ8)
+                     format_errors, now_iso_utc, TZ8,
+                     EXTRA_CHECK_FIELDS)
 
 DATA_FILE = os.path.join(HERE, "data.json")
 BASE_REQUIRED = ["time", "switchRailDisp1", "pointRailDisp1"]  # 数据最低要求
@@ -65,7 +66,7 @@ def load_and_validate(path):
         rows = json.load(f)
     good, errors = validate_rows(rows, os.path.basename(path),
                                  required=BASE_REQUIRED,
-                                 extra_fields=ADAPT_FIELDS)
+                                 extra_fields=EXTRA_CHECK_FIELDS)
     if errors:
         print(f"[校验失败] {path} 共 {len(errors)} 处非法，拒绝推送：")
         print(format_errors(errors))

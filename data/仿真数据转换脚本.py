@@ -28,14 +28,16 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from 管道公共 import validate_rows  # noqa: E402
+from 管道公共 import validate_rows, EXTENDED_FIELDS  # noqa: E402
 
 # ===== CONFIG：列名映射（按 A 实际导出格式调整，改完群通知）=====
 TIME_COL = "time"
 SWITCH_COL = "switchRailDisp1"
 POINT_COL = "pointRailDisp1"
-# 可选三路（有则转换保留，无则跳过——由推送层模拟并标注，转换层不擅自补值）
-OPTIONAL_COLS = ["switchRailDisp2", "switchRailDisp3", "pointRailDisp2"]
+# 可选列：三路位移 + 全部扩展遥测（力/电流/状态等）——有列则转换保留并
+# 做有限值校验（出现即校验，非法拒绝定位行号），无列不补假值（整改第三轮第2条）
+OPTIONAL_COLS = ["switchRailDisp2", "switchRailDisp3", "pointRailDisp2"] \
+    + EXTENDED_FIELDS
 
 STEP = 0.1
 DECIMALS = 2

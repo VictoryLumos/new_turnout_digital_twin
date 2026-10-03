@@ -54,6 +54,23 @@ REQUIRED_FIELDS = [
     "pointRailDisp1", "pointRailDisp2",
 ]
 
+# 扩展遥测字段：三路尖轨转换力、两路心轨转换力、转辙机电流/功率、
+# 锁闭/密贴状态(0/1)、岔心振动/磨耗、轮轨力横/垂、护轨位移、轨温。
+# 与 数据服务API/db02 的 FIELD_TO_POINT 全量 20 项一致——凡入库字段一律校验。
+EXTENDED_FIELDS = [
+    "switchRailForce1", "switchRailForce2", "switchRailForce3",
+    "pointRailForce1", "pointRailForce2",
+    "switchMachineCurrent", "switchMachinePower",
+    "lockStatus", "closeStatus",
+    "frogVibration", "frogWear",
+    "wheelRailForceLateral", "wheelRailForceVertical",
+    "guardRailDisp", "railTemperature",
+]
+
+# 各入口统一使用：三路位移可选 + 全部扩展字段"出现即校验"
+EXTRA_CHECK_FIELDS = ["switchRailDisp2", "switchRailDisp3", "pointRailDisp2"] \
+    + EXTENDED_FIELDS
+
 
 def validate_rows(rows, source_name="数据", required=None, extra_fields=None):
     """逐行校验数据集。返回 (合法行列表, 错误列表)。
@@ -228,9 +245,13 @@ class ResilientDB:
         rdb = ResilientDB()
         rows = rdb.run(lambda cur: (
             cur.execute("SELECT x FROM t WHERE k=%s", (k,)), cur.fetchall())[1])
+
+    重连失败（数据库停机中）同样进入重试流程：退避后继续尝试直到成功
+    或耗尽 retries 次；停机恢复后的下一次 run/请求即恢复正常工作，
+    幂等写（ON CONFLICT）保证重放不产生重复记录。
     """
 
-    def __init__(self, retries=3):
+    def __init__(self, retries=5):
         self.retries = retries
         self.conn = None
 
@@ -239,11 +260,17 @@ class ResilientDB:
             self.conn = db_connect(retries=1)
 
     def run(self, fn):
-        """执行 fn(cursor) 并提交；连接类异常自动重连重放，返回 fn 的结果。"""
+        """执行 fn(cursor) 并提交；连接/建连异常均自动重试，返回 fn 的结果。"""
         import psycopg2
         last = None
         for attempt in range(1, self.retries + 1):
-            self._ensure_conn()
+            try:
+                self._ensure_conn()
+            except Exception as e:  # noqa: BLE001 建连失败（停机中）也进重试流程
+                last = e
+                print(f"[数据库] 重连失败({attempt}/{self.retries})：{e}")
+                time.sleep(min(2.0 ** (attempt - 1), 5.0))
+                continue
             try:
                 with self.conn.cursor() as cur:
                     result = fn(cur)
