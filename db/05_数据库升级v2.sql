@@ -125,7 +125,9 @@ ORDER BY point_code;
 COMMENT ON VIEW v_data_quality IS '数据质量视图：每测点行数/首末时间/时间断点数（四工况每小时一段，断点=工况间隔，属预期设计）';
 
 -- 4.5 故障事件段视图：把 alarm_event 的逐条记录聚合成"一段段故障事件"
---     （开始/结束/持续秒数/测点/峰值/阈值/来源）—— /api/faults 的数据源
+--     （开始/恢复/持续秒数/测点/峰值/阈值/来源）
+--     2026-10-03 第四轮修正：end_ts=恢复时刻(最后超限帧+0.1s步长)，
+--     last_alarm_ts=最后超限时刻；已有库请执行 08 迁移脚本同步
 CREATE OR REPLACE VIEW v_fault_episodes AS
 WITH g AS (
     SELECT point_code, ts, value, threshold, source,
@@ -138,16 +140,18 @@ ep AS (
     FROM g)
 SELECT point_code,
        min(ts)  AS start_ts,
-       max(ts)  AS end_ts,
+       max(ts) + INTERVAL '0.1 second' AS end_ts,
+       max(ts)  AS last_alarm_ts,
        count(*) AS alarm_points,
        round(max(value)::numeric, 1) AS peak_value,
        threshold,
        max(source) AS source,
-       round(extract(epoch FROM (max(ts) - min(ts)))::numeric, 1) AS duration_s
+       round(extract(epoch FROM (max(ts) + INTERVAL '0.1 second' - min(ts)))::numeric,
+             1) AS duration_s
 FROM ep
 GROUP BY point_code, ep_id, threshold
 ORDER BY min(ts);
-COMMENT ON VIEW v_fault_episodes IS '故障事件段视图：超阈记录按30秒间隔聚合成事件段（开始/结束/持续/峰值），/api/faults 数据源';
+COMMENT ON VIEW v_fault_episodes IS '故障事件段视图：超阈记录按30秒聚合成事件段；end_ts=恢复时刻(最后超限+0.1s步长)，last_alarm_ts=最后超限时刻';
 
 -- ---------------------------------------------------------------------
 -- 5. 运行存档表（2026-09-27 追加）：健康度历史 + 维修记录（幂等）

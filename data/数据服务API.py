@@ -289,8 +289,8 @@ def api_alarm_events(point_code: str = None, limit: int = 100):
         params.append(point_code)
     params.append(max(1, min(limit, 500)))
     # WHERE 片段为固定字面量集合，筛选值全部经 %s 参数绑定
-    sql_txt = ("SELECT point_code, start_ts, end_ts, peak_value, threshold, "
-               "source, duration_s FROM v_fault_episodes WHERE "
+    sql_txt = ("SELECT point_code, start_ts, end_ts, last_alarm_ts, peak_value, "
+               "threshold, source, duration_s FROM v_fault_episodes WHERE "
                + " AND ".join(cond) + " ORDER BY start_ts DESC LIMIT %s")
     rows = q(sql_txt, params)
     name_of = {v: k for k, v in FIELD_TO_POINT.items()}
@@ -305,10 +305,12 @@ def api_alarm_events(point_code: str = None, limit: int = 100):
 
     return {"count": len(rows), "告警变化": [
         {"测点": p, "字段": name_of.get(p, p),
-         "何时超限": fmt(s), "超限峰值mm": float(v), "阈值mm": float(th),
+         "何时超限": fmt(s),
+         "最后超限": fmt(la),          # 最后一次仍超限的时刻（整改第四轮：与恢复分离）
+         "超限峰值mm": float(v), "阈值mm": float(th),
          "何时恢复": fmt(e) if e is not None else "未恢复（仍在超限）",
          "持续秒": float(d) if d is not None else None, "来源": src}
-        for p, s, e, v, th, src, d in rows]}
+        for p, s, e, la, v, th, src, d in rows]}
 
 
 @app.get("/api/health")
