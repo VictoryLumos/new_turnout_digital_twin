@@ -386,7 +386,8 @@ def test_d_pages():
     c1, d1 = http("/api/alarm-events?limit=5")
     has_fields = (c1 == 200 and d1["count"] > 0
                   and all(k in d1["告警变化"][0] for k in
-                          ("何时超限", "何时恢复", "超限峰值mm", "阈值mm", "持续秒")))
+                          ("何时超限", "何时恢复", "超限峰值", "阈值", "单位",
+                           "持续秒")))
     ok1 = c1 == 200 and has_fields
     sample = d1["告警变化"][0] if d1.get("告警变化") else {}
     record("- ①告警变化记录 /api/alarm-events：HTTP " + str(c1) + "，"

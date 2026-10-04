@@ -37,7 +37,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DS_DIR = os.path.join(HERE, "扩展数据集v2")
 CONDITIONS = ["正常转换", "卡阻", "密贴不良", "锁闭失败", "告警演示"]
 
-from 管道公共 import db_session, DB, ResilientDB  # 统一配置 + 断线恢复
+from 管道公共 import (db_session, DB, ResilientDB, validate_rows,  # noqa: E402
+                     format_errors, EXTRA_CHECK_FIELDS)
 BASE_TS = datetime(2026, 9, 26, 0, 0, 0, tzinfo=timezone(timedelta(hours=8)))
 
 # 数据字段 → 测点编码（《完整版》编码映射表全量 20 项）
@@ -57,8 +58,9 @@ FIELD_TO_POINT = {
 }
 CODE_OF = {name: code for name, code in FIELD_TO_POINT.items()}
 
-app = FastAPI(title="道岔数字孪生数据服务", version="2.1")
+app = FastAPI(title="道岔数字孪生数据服务", version="2.2")
 RDB = ResilientDB()   # 长连接：运行中数据库断线自动重连恢复（整改第二轮）
+BASE_REQUIRED = ["time", "switchRailDisp1", "pointRailDisp1"]  # 回放数据集最低要求
 _play = {"thread": None, "stop": threading.Event(), "condition": None, "t": None}
 
 
@@ -136,14 +138,14 @@ def ensure_work_order(point, remark, issued):
     print(f"[工单联动] 自动创建 {new_id}：{point} {remark}")
 
 
-def playback(condition):
-    """回放线程：把工况数据集按 0.1s 注入实时值表，并做健康检查+工单联动。
+def playback(condition, rows):
+    """回放线程：把已通过校验的工况数据按 0.1s 注入实时值表，并做健康检查+工单联动。
 
+    数据校验在 api_play 入口完成（NaN/Infinity/字符串等非法值拒绝回放，
+    不允许进入写库参数——组长第五轮第3条）；本线程接收校验后的行。
     数据库走 ResilientDB 长连接：注入过程中数据库重启/连接被杀，
-    当前帧自动重连重放，回放不中断（整改第二轮第3条）。
+    当前帧自动重连重放，回放不中断。
     """
-    path = os.path.join(DS_DIR, f"工况_{condition}.json")
-    rows = json.load(open(path, encoding="utf-8"))
     rdb = ResilientDB()
     thresholds = dict(rdb.run(lambda cur: (
         cur.execute("SELECT point_code, alarm_threshold FROM measurement_point "
@@ -244,9 +246,9 @@ fetch('/api/alarm-events?limit=8').then(r=>r.json()).then(d=>{{
 const list=d.告警变化||[];
 document.getElementById('aev').innerHTML=list.length?
 list.map(a=>'<div>'+String(a.何时超限).replace('T',' ').slice(5,23)+' 超限 <b>'+a.字段+
-'</b> 峰值 '+a.超限峰值mm+'mm（阈值'+a.阈值mm+'） → '+
-(a.何时恢复==='未恢复（仍在超限）'?'<span style="color:#f87171">未恢复</span>':
-String(a.何时恢复).replace('T',' ').slice(5,23)+' 恢复（'+a.持续秒.toFixed(1)+'s）')+'</div>').join('')
+'</b> 峰值 '+a.超限峰值+(a.单位||'')+'（阈值'+a.阈值+(a.单位||'')+'） → '+
+(a.何时恢复==='未恢复（仍在超限或数据已结束）'?'<span style="color:#f87171">未恢复</span>':
+String(a.何时恢复).replace('T',' ').slice(5,23)+' 恢复（'+(a.持续秒!=null?a.持续秒.toFixed(1):'?')+'s）')+'</div>').join('')
 :'暂无告警记录（未发生超限）'}}).catch(()=>{{}})}}
 function loadAll(){{load();loadWos();loadAev()}}
 setInterval(load,2000);setInterval(loadWos,5000);setInterval(loadAev,5000);loadAll();
@@ -290,7 +292,7 @@ def api_alarm_events(point_code: str = None, limit: int = 100):
     params.append(max(1, min(limit, 500)))
     # WHERE 片段为固定字面量集合，筛选值全部经 %s 参数绑定
     sql_txt = ("SELECT point_code, start_ts, end_ts, last_alarm_ts, peak_value, "
-               "threshold, source, duration_s FROM v_fault_episodes WHERE "
+               "threshold, unit, source, duration_s FROM v_fault_episodes WHERE "
                + " AND ".join(cond) + " ORDER BY start_ts DESC LIMIT %s")
     rows = q(sql_txt, params)
     name_of = {v: k for k, v in FIELD_TO_POINT.items()}
@@ -306,11 +308,12 @@ def api_alarm_events(point_code: str = None, limit: int = 100):
     return {"count": len(rows), "告警变化": [
         {"测点": p, "字段": name_of.get(p, p),
          "何时超限": fmt(s),
-         "最后超限": fmt(la),          # 最后一次仍超限的时刻（整改第四轮：与恢复分离）
-         "超限峰值mm": float(v), "阈值mm": float(th),
-         "何时恢复": fmt(e) if e is not None else "未恢复（仍在超限）",
+         "最后超限": fmt(la),          # 最后一次仍超限的时刻（与恢复分离）
+         "超限峰值": float(v), "阈值": float(th),
+         "单位": u,                    # 动态取自测点表（mm/A/N/…，不硬编码）
+         "何时恢复": fmt(e) if e is not None else "未恢复（仍在超限或数据已结束）",
          "持续秒": float(d) if d is not None else None, "来源": src}
-        for p, s, e, la, v, th, src, d in rows]}
+        for p, s, e, la, v, th, u, src, d in rows]}
 
 
 @app.get("/api/health")
@@ -460,7 +463,17 @@ def api_repair(work_order_id: str):
         _stop_playback()
         _play["stop"].clear()
         _play["condition"] = "正常转换"
-        _play["thread"] = threading.Thread(target=playback, args=("正常转换",), daemon=True)
+        path = os.path.join(DS_DIR, "工况_正常转换.json")
+        with open(path, encoding="utf-8") as f:
+            rows = json.load(f)
+        good, errors = validate_rows(rows, "工况_正常转换.json",
+                                     required=BASE_REQUIRED,
+                                     extra_fields=EXTRA_CHECK_FIELDS)
+        if errors:
+            raise HTTPException(400, "复测数据集校验失败："
+                                     + format_errors(errors))
+        _play["thread"] = threading.Thread(target=playback,
+                                           args=("正常转换", good))
         _play["thread"].start()
     return {"msg": f"{work_order_id} 已维修闭环；系统自动重演正常转换复测，健康度将回升"}
 
@@ -657,13 +670,24 @@ window.addEventListener('load',load);fit();load();
 def api_play(condition: str):
     if condition not in CONDITIONS:
         raise HTTPException(404, f"未知工况，可选：{CONDITIONS}")
+    # 入口强制校验（第五轮第3条）：数据集非法 → 拒绝回放，不进入写库参数
+    path = os.path.join(DS_DIR, f"工况_{condition}.json")
+    with open(path, encoding="utf-8") as f:
+        rows = json.load(f)
+    good, errors = validate_rows(rows, f"工况_{condition}.json",
+                                 required=BASE_REQUIRED,
+                                 extra_fields=EXTRA_CHECK_FIELDS)
+    if errors:
+        raise HTTPException(400, "数据集校验失败，拒绝回放：\n"
+                                 + format_errors(errors))
     _stop_playback()
     _play["stop"].clear()
     _play["condition"] = condition
-    _play["thread"] = threading.Thread(target=playback, args=(condition,), daemon=True)
+    _play["thread"] = threading.Thread(target=playback,
+                                       args=(condition, good))
     _play["thread"].start()
-    return {"msg": f"开始回放「{condition}」，实时值表每0.1s刷新，"
-                   f"观察 /api/health 与 /api/workorders 联动"}
+    return {"msg": f"开始回放「{condition}」（{len(good)} 行已校验），"
+                   f"实时值表每0.1s刷新，观察 /api/health 与 /api/workorders 联动"}
 
 
 @app.post("/api/stop")

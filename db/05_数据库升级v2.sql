@@ -124,34 +124,48 @@ GROUP BY point_code
 ORDER BY point_code;
 COMMENT ON VIEW v_data_quality IS '数据质量视图：每测点行数/首末时间/时间断点数（四工况每小时一段，断点=工况间隔，属预期设计）';
 
--- 4.5 故障事件段视图：把 alarm_event 的逐条记录聚合成"一段段故障事件"
---     （开始/恢复/持续秒数/测点/峰值/阈值/来源）
---     2026-10-03 第四轮修正：end_ts=恢复时刻(最后超限帧+0.1s步长)，
---     last_alarm_ts=最后超限时刻；已有库请执行 08 迁移脚本同步
+-- 4.5 告警事件段视图 v2：基于 timeseries_data 按状态跃迁分段
+--     （2026-10-04 第五轮：恢复后再告警=独立事件；恢复时刻=同源最后超限后
+--      第一条≤阈值的真实数据帧，无则NULL；含 unit 列；已有库执行 08 迁移同步）
 CREATE OR REPLACE VIEW v_fault_episodes AS
-WITH g AS (
-    SELECT point_code, ts, value, threshold, source,
-           ts - lag(ts) OVER (PARTITION BY point_code ORDER BY ts) AS gap
-    FROM alarm_event),
-ep AS (
-    SELECT *, sum(CASE WHEN gap > INTERVAL '30 seconds' OR gap IS NULL
-                       THEN 1 ELSE 0 END)
-           OVER (PARTITION BY point_code ORDER BY ts) AS ep_id
-    FROM g)
-SELECT point_code,
-       min(ts)  AS start_ts,
-       max(ts) + INTERVAL '0.1 second' AS end_ts,
-       max(ts)  AS last_alarm_ts,
-       count(*) AS alarm_points,
-       round(max(value)::numeric, 1) AS peak_value,
-       threshold,
-       max(source) AS source,
-       round(extract(epoch FROM (max(ts) + INTERVAL '0.1 second' - min(ts)))::numeric,
-             1) AS duration_s
-FROM ep
-GROUP BY point_code, ep_id, threshold
-ORDER BY min(ts);
-COMMENT ON VIEW v_fault_episodes IS '故障事件段视图：超阈记录按30秒聚合成事件段；end_ts=恢复时刻(最后超限+0.1s步长)，last_alarm_ts=最后超限时刻';
+WITH th AS (
+    SELECT point_code, alarm_threshold AS threshold, unit
+    FROM measurement_point WHERE alarm_threshold IS NOT NULL),
+s AS (
+    SELECT t.point_code, t.ts, t.value, t.source, th.threshold, th.unit,
+           (t.value > th.threshold) AS over
+    FROM timeseries_data t JOIN th ON th.point_code = t.point_code),
+k AS (
+    SELECT *,
+           (over AND NOT COALESCE(lag(over) OVER (
+                PARTITION BY point_code, source ORDER BY ts), false)) AS is_start
+    FROM s),
+a AS (
+    SELECT *,
+           sum(CASE WHEN is_start THEN 1 ELSE 0 END) OVER (
+                PARTITION BY point_code, source ORDER BY ts) AS seg_id
+    FROM k WHERE over),
+seg AS (
+    SELECT point_code, source, seg_id,
+           min(ts) AS start_ts, max(ts) AS last_alarm_ts,
+           count(*) AS alarm_points,
+           round(max(value)::numeric, 1) AS peak_value,
+           threshold, unit
+    FROM a GROUP BY point_code, source, seg_id, threshold, unit)
+SELECT seg.point_code, seg.start_ts, seg.last_alarm_ts, seg.alarm_points,
+       seg.peak_value, seg.threshold, seg.unit, seg.source,
+       rec.ts AS end_ts,
+       CASE WHEN rec.ts IS NULL THEN NULL
+            ELSE round(extract(epoch FROM (rec.ts - seg.start_ts))::numeric, 1)
+       END AS duration_s
+FROM seg
+LEFT JOIN LATERAL (
+    SELECT t.ts FROM timeseries_data t
+    WHERE t.point_code = seg.point_code AND t.source = seg.source
+      AND t.ts > seg.last_alarm_ts AND t.value <= seg.threshold
+    ORDER BY t.ts LIMIT 1) rec ON TRUE
+ORDER BY seg.start_ts;
+COMMENT ON VIEW v_fault_episodes IS '告警事件段视图v2：状态跃迁分段(恢复后再告警=独立事件)；end_ts=真实恢复帧(同源最后超限后第一条≤阈值，无则NULL)；unit=测点单位';
 
 -- ---------------------------------------------------------------------
 -- 5. 运行存档表（2026-09-27 追加）：健康度历史 + 维修记录（幂等）

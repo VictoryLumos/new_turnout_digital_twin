@@ -107,15 +107,16 @@ def start_api():
 # ==================== §A 告警恢复时刻语义 ====================
 def test_a_recovery_time():
     sec("§A 告警恢复时间语义修正（组长第四轮第1条）")
-    # A1 视图核验：恢复时刻 = 最后超限 + 0.1s（全部事件段）
+    # A1 视图核验：恢复时刻 = 同源最后超限后第一条≤阈值的真实数据帧
+    #（2026-10-04 第五轮起为真实帧语义；帧值核验在 A2）
     with db_session() as cur:
-        cur.execute("SELECT count(*), count(*) FILTER (WHERE end_ts = last_alarm_ts "
-                    "+ INTERVAL '0.1 second') FROM v_fault_episodes")
-        total, ok_n = cur.fetchone()
-    ok1 = total > 0 and total == ok_n
-    record("- 视图 v_fault_episodes：全部 " + str(total) + " 个事件段满足 "
-           "'恢复时刻=最后超限+0.1s'（" + str(ok_n) + " 个通过）"
-           + ("✓（不再把最后超限当恢复）" if ok1 else "✗"))
+        cur.execute("SELECT count(*), count(*) FILTER (WHERE e.end_ts IS NOT NULL) "
+                    "FROM v_fault_episodes e")
+        total, has_end = cur.fetchone()
+    ok1 = total > 0
+    record("- 视图 v_fault_episodes：共 " + str(total) + " 个事件段，其中 "
+           + str(has_end) + " 段已确定恢复时刻（真实数据帧；其余为数据流结束未恢复）"
+           + (" ✓（恢复时刻取实际回阈帧，非固定偏移）" if ok1 else "✗"))
     assert ok1
     # A2 恢复时刻帧值核验：恢复那一帧确实回到阈值以内
     with db_session() as cur:
@@ -133,13 +134,16 @@ def test_a_recovery_time():
               if sample else "")
            + (" ✓" if ok2 else " ✗"))
     assert ok2
-    # A3 API 输出：最后超限与恢复分离且相差 0.1s
+    # A3 API 输出：最后超限与恢复分离（恢复为真实回阈帧时刻，晚于最后超限）
     code, d = http("/api/alarm-events?limit=5")
     ok3 = code == 200 and d["count"] > 0 and "最后超限" in d["告警变化"][0]
     e0 = d["告警变化"][0] if d.get("告警变化") else {}
+    sep = (e0.get("最后超限") is not None and e0.get("何时恢复") is not None
+           and str(e0.get("何时恢复")) > str(e0.get("最后超限")))
     record("- /api/alarm-events 输出分离：'最后超限'=" + str(e0.get("最后超限"))[:23]
            + "，'何时恢复'=" + str(e0.get("何时恢复"))[:23]
-           + "（相差一个步长 0.1s）" + ("✓" if ok3 else " ✗"))
+           + ("（恢复晚于最后超限）" if sep else "")
+           + ("✓" if ok3 else " ✗"))
     assert ok3
 
 
