@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 
 import psycopg2
 from psycopg2.extras import execute_values
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -345,6 +345,7 @@ button{{background:#2563eb;border:0;color:#fff;border-radius:6px;padding:3px 10p
 <a href="/trend">📈 趋势回放页（/trend）</a> · <a href="/trend5">🛤 五路位移总览（/trend5）</a> · <a href="/api/diagnosis">诊断（/api/diagnosis）</a> · <a href="/api/alarm-events">告警变化（/api/alarm-events）</a><br>
 GET /api/realtime 实时监测 · GET /api/alarms 告警 · GET /api/health 健康度<br>
 GET /api/identify 工况自动识别 · GET /api/stats 系统状态 · GET /api/alarm-events 告警变化记录<br>
+GET /api/model 模型映射总表（C 用） · GET /api/faults 故障事件清单 · POST /api/ingest 数据直推<br>
 GET /api/workorders 工单 · GET /api/history/测点编码?limit=n 历史查询 · GET /api/points 测点清单<br>
 GET /api/conditions 数据集 · POST /api/play/工况 · POST /api/repair/工单号 · POST /api/stop</div>
 <script>
@@ -585,6 +586,150 @@ def api_stats():
                           f"{uptime.seconds % 3600 // 60:02d}m{uptime.seconds % 60:02d}s",
                  "识别引擎": "统计特征最近邻（8维特征 × 4工况同相位前缀参考）"},
     }
+
+
+@app.get("/api/model")
+def api_model():
+    """测点↔构件↔3D模型节点 映射总表（C 端驱动模型的一站式对照接口，找回自 81a1f4e）
+
+    C 的用法：拿测点编码或数据字段名 → 查 node_name/model_node 找到 glTF 节点 →
+    按 unit 换算位移 → 按 alarm_threshold 判超限变红（阈值与库内同源）。
+    """
+    comps = q("SELECT c.component_code, c.turnout_id, c.component_type, "
+              "c.model_node, c.asset_id, count(p.point_code) AS pts "
+              "FROM component c LEFT JOIN measurement_point p USING (component_code) "
+              "GROUP BY c.component_code, c.turnout_id, c.component_type, "
+              "c.model_node, c.asset_id ORDER BY c.component_code")
+    pts = q("SELECT point_code, field_name, node_name, unit, alarm_threshold, "
+            "component_code FROM measurement_point ORDER BY point_code")
+    return {
+        "构件": [{"编码": c, "道岔": t, "类型": ty, "模型节点": n, "资产ID": a,
+                 "测点数": int(p)} for c, t, ty, n, a, p in comps],
+        "测点映射": [{"测点": p, "数据字段": f, "模型节点": n, "单位": u,
+                     "阈值": th, "所属构件": c} for p, f, n, u, th, c in pts],
+        "用法": "字段值→按测点映射找模型节点→毫米×0.001换算移动模型→value>阈值变红；"
+                "A 确认导出后 model_node 以 /api/model 实时返回为准（库内可改，无需改页面）",
+    }
+
+
+@app.post("/api/ingest")
+def api_ingest(payload: dict):
+    """统一数据直推入库（契约 v2.0 第 6 节 HTTP 实装；找回自 81a1f4e 并加固）
+
+    请求体：{"source": "sensor-01", "batch": "可选批次号",
+             "rows": [{"time": 0.0, "switchRailDisp1": 1.2, ...}, ...]}
+    - 时间二选一：time=秒数（基准 2026-09-26 00:00+08）或 ts=ISO8601 字符串；
+    - 严格顺序（六轮教训）：**先完整校验**（缺字段/字符串/null/NaN/Infinity/
+      乱序/空 rows/超 5000 行 → 400 带行号+字段定位），校验通过才写库；
+    - 写库幂等（(测点,时间) 冲突跳过）→ 触发器自动超阈审计 → 实时值刷新；
+    - 未知字段忽略并在响应中列明（防拼写差异静默丢数据）。
+    """
+    src = str(payload.get("source") or "sensor")[:64]
+    batch = payload.get("batch")
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise HTTPException(400, "请求体需为 {'source':..., 'rows':[{...}]} 且 rows 非空")
+    if len(rows) > 5000:
+        raise HTTPException(400, "单次最多 5000 行，请分批")
+    # 时间归一：ts(ISO8601) 行换算成相对秒 time，再走统一校验
+    tz8 = timezone(timedelta(hours=8))
+    norm = []
+    for r in rows:
+        r2 = dict(r)
+        if r2.get("time") is None and r2.get("ts") is not None:
+            try:
+                d = datetime.fromisoformat(str(r2["ts"]).replace("Z", "+00:00"))
+            except ValueError:
+                raise HTTPException(400, f"ts 解析失败：{r2['ts']!r}")
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=tz8)
+            r2["time"] = round((d - BASE_TS).total_seconds(), 3)
+        norm.append(r2)
+    good, errors = validate_rows(norm, "ingest", required=BASE_REQUIRED,
+                                 extra_fields=EXTRA_CHECK_FIELDS)
+    if errors:
+        raise HTTPException(400, "数据校验失败，拒绝入库（未写入任何行）：\n"
+                                 + format_errors(errors))
+    thresholds = {p: th for p, th in q(
+        "SELECT point_code, alarm_threshold FROM measurement_point "
+        "WHERE alarm_threshold IS NOT NULL")}
+    payload_rows, latest = [], {}
+    for r in good:
+        ts_dt = BASE_TS + timedelta(seconds=float(r["time"]))
+        for field, point in FIELD_TO_POINT.items():
+            if field in r and r[field] is not None:
+                v = float(r[field])
+                payload_rows.append((point, ts_dt, v, src, batch))
+                latest[point] = (v, ts_dt)
+    if not payload_rows:
+        raise HTTPException(400, "rows 里没有契约字段（字段清单见 /api/points）；"
+                                 f"收到的键：{sorted({k for r in rows for k in r})[:15]}")
+
+    def _write(cur):
+        execute_values(cur,
+            "INSERT INTO timeseries_data (point_code, ts, value, source, batch) "
+            "VALUES %s ON CONFLICT (point_code, ts) DO NOTHING",
+            payload_rows, template="(%s, %s, %s, %s, %s)")
+        execute_values(cur,
+            "INSERT INTO realtime_value (point_code, value, ts, alarm, updated_at) "
+            "VALUES %s ON CONFLICT (point_code) DO UPDATE SET "
+            "value=EXCLUDED.value, ts=EXCLUDED.ts, alarm=EXCLUDED.alarm, "
+            "updated_at=now()",
+            [(p, v, t, p in thresholds and v > thresholds[p])
+             for p, (v, t) in latest.items()],
+            template="(%s, %s, %s, %s, now())")
+    RDB.run(_write)
+    unknown = sorted({k for r in rows for k in r}
+                     - set(FIELD_TO_POINT) - {"time", "ts", "source", "batch"})[:15]
+    alarm_pts = [p for p, (v, t) in latest.items()
+                 if p in thresholds and v > thresholds[p]]
+    return {"入库行数": len(payload_rows), "来源": src, "批次": batch,
+            "未知字段已忽略": unknown, "当前超阈测点": alarm_pts,
+            "说明": "幂等：同(测点,时间)重复推送自动跳过；触发器已自动做超阈审计"}
+
+
+@app.get("/api/faults")
+def api_faults(request: Request, limit: int = 200):
+    """故障事件清单（v_fault_episodes v2）：JSON / 浏览器网页双形态（找回自 09b326f）。
+
+    每段含：开始/恢复/最后超限/持续/测点/峰值/阈值/单位/来源——
+    "什么时候、哪个测点、超了多少、何时恢复、持续多久"一请求出全天清单。
+    浏览器直接打开显示网页，程序调用返回 JSON。
+    """
+    lim = max(1, min(limit, 500))
+    rows = q("SELECT point_code, start_ts, end_ts, last_alarm_ts, alarm_points, "
+             "peak_value, threshold, unit, source, duration_s "
+             "FROM v_fault_episodes ORDER BY start_ts DESC LIMIT %s", (lim,))
+    name_of = {v: k for k, v in FIELD_TO_POINT.items()}
+    tz8 = timezone(timedelta(hours=8))
+
+    def fmt(t):
+        if t is None:
+            return "未恢复"
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=tz8)
+        return t.astimezone(tz8).strftime("%m-%d %H:%M:%S")
+
+    events = [{"测点": p, "字段": name_of.get(p, p), "开始": fmt(s),
+               "最后超限": fmt(la), "恢复": fmt(e), "持续秒": float(d) if d is not None else None,
+               "超阈点数": int(n), "峰值": float(pk), "阈值": float(th),
+               "单位": u, "来源": src}
+              for p, s, e, la, n, pk, th, u, src, d in rows]
+    if request.headers.get("accept", "").startswith("text/html"):
+        trs = "".join(
+            f"<tr><td>{e['开始']}</td><td>{e['字段']}</td><td>{e['峰值']}{e['单位']}</td>"
+            f"<td>{e['阈值']}{e['单位']}</td><td>{e['恢复']}</td><td>{e['持续秒']}</td>"
+            f"<td>{e['超阈点数']}</td><td>{e['来源']}</td></tr>" for e in events)
+        return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>故障事件清单</title><style>body{{font-family:"Microsoft YaHei";background:#0b1220;color:#e2e8f0;padding:20px}}
+.c{{background:#111c30;border:1px solid #1e2f4d;border-radius:12px;padding:14px 18px}}
+table{{border-collapse:collapse;width:100%;font-size:13px}}td,th{{border:1px solid #1e2f4d;padding:4px 8px;text-align:left}}</style></head><body>
+<div class="c"><b>全天故障/超限事件段</b>（状态跃迁分段：恢复后再告警=独立事件；恢复时刻=真实回阈帧）
+<table><tr><th>开始</th><th>字段</th><th>峰值</th><th>阈值</th><th>恢复</th><th>持续秒</th><th>超阈点数</th><th>来源</th></tr>
+{trs}</table>
+<div style="font-size:12px;color:#64748b;margin-top:8px">审计层只记"越阈事实"；是否判为故障由健康度规则层决定（正常转换终点160mm越过演示阈值150也如实记录——分层设计）。JSON 接口同地址（程序调用）。</div></div></body></html>""")
+    return {"count": len(events), "事件段": events,
+            "说明": "状态跃迁分段（恢复后再告警=独立事件）；恢复=同源最后超限后第一条≤阈值真实帧"}
 
 
 ADVICE = {
