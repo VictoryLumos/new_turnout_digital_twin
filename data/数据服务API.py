@@ -449,7 +449,16 @@ def api_diagnosis():
 
 @app.post("/api/repair/{work_order_id}")
 def api_repair(work_order_id: str):
-    """维修闭环：工单完结 → 自动重演正常转换复测 → 健康度回升（维修后数据自动更新）"""
+    """维修闭环：工单完结 → 自动重演正常转换复测 → 健康度回升（维修后数据自动更新）。
+
+    严格顺序（组长第六轮：先校验数据，再修改工单状态）：
+      1) 查工单（不存在 404 / 非 open 400）——只读；
+      2) **无条件校验**复测数据集（无论当前回放状态；非法 → 400，工单保持 open，
+         绝不先改状态后校验）；
+      3) 需要时启动复测回放（数据已校验通过）；
+      4) 回放启动成功后才把工单改为 resolved——任何提前失败工单都保持 open，
+         宁可未闭环也不假闭环。
+    """
     rows = q("SELECT point_code, status, remark FROM work_order WHERE work_order_id=%s",
              (work_order_id,))
     if not rows:
@@ -457,25 +466,28 @@ def api_repair(work_order_id: str):
     point, status, remark = rows[0]
     if status != "open":
         raise HTTPException(400, f"工单 {work_order_id} 状态为 {status}，无需维修")
-    q("UPDATE work_order SET status='resolved', remark=%s WHERE work_order_id=%s",
-      (remark + "（维修完成闭环）", work_order_id), fetch=False)
+    # 1) 先校验复测数据集（工单状态未做任何修改）
+    path = os.path.join(DS_DIR, "工况_正常转换.json")
+    with open(path, encoding="utf-8") as f:
+        ds_rows = json.load(f)
+    good, errors = validate_rows(ds_rows, "工况_正常转换.json",
+                                 required=BASE_REQUIRED,
+                                 extra_fields=EXTRA_CHECK_FIELDS)
+    if errors:
+        raise HTTPException(400, "复测数据集校验失败，工单保持 open 不变：\n"
+                                 + format_errors(errors))
+    # 2) 校验通过 → 启动复测回放（当前已在回放正常转换则不重启）
     if _play["condition"] != "正常转换":
         _stop_playback()
         _play["stop"].clear()
         _play["condition"] = "正常转换"
-        path = os.path.join(DS_DIR, "工况_正常转换.json")
-        with open(path, encoding="utf-8") as f:
-            rows = json.load(f)
-        good, errors = validate_rows(rows, "工况_正常转换.json",
-                                     required=BASE_REQUIRED,
-                                     extra_fields=EXTRA_CHECK_FIELDS)
-        if errors:
-            raise HTTPException(400, "复测数据集校验失败："
-                                     + format_errors(errors))
         _play["thread"] = threading.Thread(target=playback,
                                            args=("正常转换", good))
         _play["thread"].start()
-    return {"msg": f"{work_order_id} 已维修闭环；系统自动重演正常转换复测，健康度将回升"}
+    # 3) 回放启动后才修改工单状态
+    q("UPDATE work_order SET status='resolved', remark=%s WHERE work_order_id=%s",
+      (remark + "（维修完成闭环）", work_order_id), fetch=False)
+    return {"msg": f"{work_order_id} 已维修闭环；复测数据校验通过，系统自动重演正常转换，健康度将回升"}
 
 
 @app.get("/api/points")
