@@ -138,13 +138,30 @@ def ensure_work_order(point, remark, issued):
     print(f"[工单联动] 自动创建 {new_id}：{point} {remark}")
 
 
-def playback(condition, rows):
+def load_condition(condition):
+    """加载并强制校验工况数据集；非法/为空 → HTTPException 400（api_play 与
+    api_repair 共用同一入口判据——任何回放路径都不放行非法或空数据）。"""
+    path = os.path.join(DS_DIR, f"工况_{condition}.json")
+    with open(path, encoding="utf-8") as f:
+        rows = json.load(f)
+    if not rows:
+        raise HTTPException(400, f"工况_{condition}.json 数据集为空，拒绝回放")
+    good, errors = validate_rows(rows, f"工况_{condition}.json",
+                                 required=BASE_REQUIRED,
+                                 extra_fields=EXTRA_CHECK_FIELDS)
+    if errors:
+        raise HTTPException(400, "数据集校验失败，拒绝回放：\n"
+                                 + format_errors(errors))
+    return good
+
+
+def playback(condition, rows, stop_evt):
     """回放线程：把已通过校验的工况数据按 0.1s 注入实时值表，并做健康检查+工单联动。
 
-    数据校验在 api_play 入口完成（NaN/Infinity/字符串等非法值拒绝回放，
-    不允许进入写库参数——组长第五轮第3条）；本线程接收校验后的行。
-    数据库走 ResilientDB 长连接：注入过程中数据库重启/连接被杀，
-    当前帧自动重连重放，回放不中断。
+    数据校验在 api_play / api_repair 入口完成（非法值拒绝回放，不进入写库
+    参数）。stop_evt 为本线程**私有**停止事件（自查修复：不再与全局共享——
+    共享时若旧线程因数据库卡顿未能在 join 超时内退出，下一次回放的 clear()
+    会把旧线程"复活"，造成双写）。数据库走 ResilientDB 长连接，断线自动重连。
     """
     rdb = ResilientDB()
     thresholds = dict(rdb.run(lambda cur: (
@@ -155,7 +172,7 @@ def playback(condition, rows):
     issued = set()
     try:
         for r in rows:
-            if _play["stop"].is_set():
+            if stop_evt.is_set():
                 break
             ts = BASE_TS + timedelta(seconds=r["time"])
             score, grade, issues = 100.0, "优", []
@@ -181,7 +198,7 @@ def playback(condition, rows):
             if int(r["time"] * 10) % 10 == 0:
                 mark = f"{score:.0f}({grade})" if score is not None else "(无数据)"
                 print(f"  [回放] t={r['time']:>4.1f}s 健康度={mark}")
-            _play["stop"].wait(0.1)
+            stop_evt.wait(0.1)
     finally:
         rdb.close()
         print(f"[回放] 工况「{condition}」注入结束")
@@ -466,23 +483,16 @@ def api_repair(work_order_id: str):
     point, status, remark = rows[0]
     if status != "open":
         raise HTTPException(400, f"工单 {work_order_id} 状态为 {status}，无需维修")
-    # 1) 先校验复测数据集（工单状态未做任何修改）
-    path = os.path.join(DS_DIR, "工况_正常转换.json")
-    with open(path, encoding="utf-8") as f:
-        ds_rows = json.load(f)
-    good, errors = validate_rows(ds_rows, "工况_正常转换.json",
-                                 required=BASE_REQUIRED,
-                                 extra_fields=EXTRA_CHECK_FIELDS)
-    if errors:
-        raise HTTPException(400, "复测数据集校验失败，工单保持 open 不变：\n"
-                                 + format_errors(errors))
-    # 2) 校验通过 → 启动复测回放（当前已在回放正常转换则不重启）
+    # 1) 先校验复测数据集（工单状态未做任何修改；空数据集同样拒绝）
+    good = load_condition("正常转换")
+    # 2) 校验通过 → 启动复测回放（当前已在回放正常转换则不重启；私有停止事件）
     if _play["condition"] != "正常转换":
+        evt = threading.Event()
         _stop_playback()
-        _play["stop"].clear()
+        _play["stop"] = evt
         _play["condition"] = "正常转换"
         _play["thread"] = threading.Thread(target=playback,
-                                           args=("正常转换", good))
+                                           args=("正常转换", good, evt))
         _play["thread"].start()
     # 3) 回放启动后才修改工单状态
     q("UPDATE work_order SET status='resolved', remark=%s WHERE work_order_id=%s",
@@ -682,21 +692,14 @@ window.addEventListener('load',load);fit();load();
 def api_play(condition: str):
     if condition not in CONDITIONS:
         raise HTTPException(404, f"未知工况，可选：{CONDITIONS}")
-    # 入口强制校验（第五轮第3条）：数据集非法 → 拒绝回放，不进入写库参数
-    path = os.path.join(DS_DIR, f"工况_{condition}.json")
-    with open(path, encoding="utf-8") as f:
-        rows = json.load(f)
-    good, errors = validate_rows(rows, f"工况_{condition}.json",
-                                 required=BASE_REQUIRED,
-                                 extra_fields=EXTRA_CHECK_FIELDS)
-    if errors:
-        raise HTTPException(400, "数据集校验失败，拒绝回放：\n"
-                                 + format_errors(errors))
+    # 入口强制校验（第五轮第3条+自查：空数据集同样拒绝）
+    good = load_condition(condition)
+    evt = threading.Event()          # 本轮回放私有的停止事件（防旧线程复活）
     _stop_playback()
-    _play["stop"].clear()
+    _play["stop"] = evt
     _play["condition"] = condition
     _play["thread"] = threading.Thread(target=playback,
-                                       args=(condition, good))
+                                       args=(condition, good, evt))
     _play["thread"].start()
     return {"msg": f"开始回放「{condition}」（{len(good)} 行已校验），"
                    f"实时值表每0.1s刷新，观察 /api/health 与 /api/workorders 联动"}

@@ -64,6 +64,8 @@ SEQ_TOTAL = 0      # 全局序号（跨轮次累计，证明数据新鲜度）
 def load_and_validate(path):
     with open(path, encoding="utf-8") as f:
         rows = json.load(f)
+    if not rows:
+        sys.exit(f"[校验失败] {path} 数据集为空，拒绝推送")
     good, errors = validate_rows(rows, os.path.basename(path),
                                  required=BASE_REQUIRED,
                                  extra_fields=EXTRA_CHECK_FIELDS)

@@ -91,6 +91,8 @@ def main():
         print(f"[校验失败] {args.file} 共 {len(errors)} 处非法，拒绝入库：")
         print(format_errors(errors))
         sys.exit(1)
+    if not good:
+        sys.exit("[失败] 数据集为空，拒绝入库")
     print(f"[校验] 通过：{len(good)} 条（{args.file}）")
 
     # 2) 批次与时间轴（同批次重导幂等：按"批次首条时刻-数据集起始秒"对齐
