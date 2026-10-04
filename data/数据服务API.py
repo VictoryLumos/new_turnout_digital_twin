@@ -26,6 +26,8 @@ r"""
 import json
 import os
 import threading
+import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 
 import psycopg2
@@ -58,10 +60,12 @@ FIELD_TO_POINT = {
 }
 CODE_OF = {name: code for name, code in FIELD_TO_POINT.items()}
 
-app = FastAPI(title="道岔数字孪生数据服务", version="2.2")
+app = FastAPI(title="道岔数字孪生数据服务", version="2.3")
 RDB = ResilientDB()   # 长连接：运行中数据库断线自动重连恢复（整改第二轮）
 BASE_REQUIRED = ["time", "switchRailDisp1", "pointRailDisp1"]  # 回放数据集最低要求
-_play = {"thread": None, "stop": threading.Event(), "condition": None, "t": None}
+START_AT = datetime.now()
+_play = {"thread": None, "stop": threading.Event(), "condition": None, "t": None,
+         "window": deque(maxlen=100), "lock": threading.Lock()}
 
 
 def q(sql, args=(), fetch=True):
@@ -129,13 +133,117 @@ def ensure_work_order(point, remark, issued):
     if exists:
         issued.add(key)
         return
-    (max_id,) = q("SELECT coalesce(max(work_order_id),'WO-2026-000') FROM work_order "
-                  "WHERE left(work_order_id, 8) = 'WO-2026-'")[0]
-    new_id = f"WO-2026-{int(max_id.split('-')[-1]) + 1:03d}"
+    # 序号取数值最大（自查修复：字符串排序在 999 之后会错判最大值，
+    # 导致新号与既有工单冲突、自动生成卡死；正则限定纯数字序号再转 int）
+    (max_no,) = q("SELECT coalesce(max(split_part(work_order_id, '-', 3)::int), 0) "
+                  "FROM work_order WHERE work_order_id ~ %s",
+                  ('^WO-2026-[0-9]+$',))[0]
+    new_id = f"WO-2026-{max_no + 1:03d}"
     q("INSERT INTO work_order (work_order_id, point_code, status, remark) "
       "VALUES (%s,%s,'open',%s)", (new_id, point, stored), fetch=False)
     issued.add(key)
     print(f"[工单联动] 自动创建 {new_id}：{point} {remark}")
+
+
+# ===================== 工况自动识别（v2.1 找回：统计特征最近邻） =====================
+# 思路：把一段回放窗口压成 8 维可解释统计特征，与四个工况数据集的参考特征
+# 做加权距离匹配，取最近者为识别结果，1 - d_min/d_second 为置信度。
+# 答辩口径：可解释的统计特征匹配（非深度学习），数据来自四工况仿真数据集。
+# 2026-10-04 详细检查时发现该功能在分支合并时丢失（稳定性压测引用
+# /api/identify、/api/stats 会报错），从 4903f0f 找回并适配当前架构。
+
+FEATURE_SCALES = {   # 各特征归一化量纲尺度
+    "终点位移": 160.0, "电流均值": 3.0, "电流峰值": 10.0, "末段电流": 3.0,
+    "锁闭末态": 1.0, "密贴末态": 1.0, "密贴抖动": 4.0, "位移全程变化": 160.0,
+}
+FEATURE_WEIGHTS = {  # 权重体现判据重要性：位移结果 > 电流过程 > 表示状态
+    "终点位移": 0.25, "电流均值": 0.15, "电流峰值": 0.10, "末段电流": 0.15,
+    "锁闭末态": 0.15, "密贴末态": 0.10, "密贴抖动": 0.05, "位移全程变化": 0.05,
+}
+_PREFIX_REFS = None   # {工况: {前缀长度L: 特征}}：回放进行到第 L 行就和各工况前 L 行比
+
+
+def extract_features(rows):
+    """一段数据窗口 → 8 维统计特征（None 表示窗口为空）"""
+    if not rows:
+        return None
+    disp = [float(r.get("switchRailDisp1", 0.0)) for r in rows]
+    curr = [float(r.get("switchMachineCurrent", 0.0)) for r in rows]
+    close = [int(r.get("closeStatus", 0)) for r in rows]
+    tail_n = max(1, len(curr) // 5)  # 末 20% 电流（锁闭失败的重试脉冲藏在这里）
+    return {
+        "终点位移": disp[-1],
+        "电流均值": sum(curr) / len(curr),
+        "电流峰值": max(curr),
+        "末段电流": sum(curr[-tail_n:]) / tail_n,
+        "锁闭末态": int(rows[-1].get("lockStatus", 0)),
+        "密贴末态": close[-1],
+        "密贴抖动": sum(1 for i in range(1, len(close)) if close[i] != close[i - 1]),
+        "位移全程变化": max(disp) - min(disp),
+    }
+
+
+def feature_distance(a, b):
+    return sum(FEATURE_WEIGHTS[k] * ((a[k] - b[k]) / FEATURE_SCALES[k]) ** 2
+               for k in FEATURE_WEIGHTS)
+
+
+def prefix_ref_features():
+    """四工况按前缀长度的参考特征（30..全段）：同相位比对，回放中途也能识别。
+
+    例：窗口积到 60 行（t=0~5.9s），就和每个工况数据集的前 60 行比——
+    避免拿"转换进行中"的窗口去和"整段已结束"的参考比而误判。
+    注意：正常转换与锁闭失败前 6 秒数据本就相同，此阶段两者距离并列、
+    置信度趋近 0，属于数据本身不可分，等锁闭状态出现后自然分开。
+    """
+    global _PREFIX_REFS
+    if _PREFIX_REFS is None:
+        pre = {}
+        for c in CONDITIONS:
+            path = os.path.join(DS_DIR, f"工况_{c}.json")
+            if not os.path.exists(path):
+                continue
+            with open(path, encoding="utf-8") as f:
+                rows = json.load(f)
+            pre[c] = {L: extract_features(rows[:L]) for L in range(30, len(rows) + 1)}
+        _PREFIX_REFS = pre
+    return _PREFIX_REFS
+
+
+def do_identify():
+    """当前回放窗口 → {识别工况, 置信度, 距离, 特征…}；窗口不足时说明原因。
+
+    置信度 = 1 - 最近距离/次近距离：两个工况前段数据相同时（本就不可分）
+    置信度诚实趋近 0，而不是虚高。
+    """
+    with _play["lock"]:
+        rows = list(_play["window"])
+    L = len(rows)
+    refs = prefix_ref_features()
+    if not refs:
+        return {"识别工况": None, "说明": "扩展数据集v2 缺失，无法计算参考特征"}
+    if L < 30:
+        return {"识别工况": None,
+                "说明": f"回放窗口仅 {L} 行（需≥30 行≈3 秒数据），识别待数据积累"}
+    feat = extract_features(rows)
+    dist = {c: feature_distance(feat, pre[L]) for c, pre in refs.items() if L in pre}
+    ranked = sorted(dist, key=dist.get)
+    best, second = ranked[0], ranked[1]
+    conf = max(0.0, 1.0 - dist[best] / dist[second]) if dist[second] > 0 else 0.0
+    return {
+        "识别工况": best,
+        "置信度": round(min(conf, 0.99), 3),
+        "次接近": f"{second}（距离 {dist[second]:.3f}）",
+        "特征依据": "终点位移 {:.0f}mm、电流峰值 {:.1f}A、电流均值 {:.2f}A、"
+                    "锁闭末态 {}、密贴末态 {}、密贴抖动 {} 次".format(
+                        feat["终点位移"], feat["电流峰值"], feat["电流均值"],
+                        feat["锁闭末态"], feat["密贴末态"], feat["密贴抖动"]),
+        "各工况距离": {c: round(d, 4)
+                      for c, d in sorted(dist.items(), key=lambda kv: kv[1])},
+        "特征向量": {k: round(v, 3) for k, v in feat.items()},
+        "窗口": {"行数": L, "窗口已满": L >= _play["window"].maxlen,
+                 "覆盖秒": f"{rows[0]['time']}~{rows[-1]['time']}s"},
+    }
 
 
 def load_condition(condition):
@@ -191,6 +299,8 @@ def playback(condition, rows, stop_evt):
                 vals = {FIELD_TO_POINT[f]: r[f] for f in r if f in FIELD_TO_POINT}
                 score, grade, issues = health_check(vals)
                 _play["t"] = r["time"]
+                with _play["lock"]:
+                    _play["window"].append(r)   # 识别窗口积累（/api/identify）
                 for it in issues:
                     ensure_work_order(it["关联测点"], it["规则"], issued)
             except Exception as e:  # noqa: BLE001 停机等异常：本帧暂缓，下一帧续写
@@ -234,6 +344,7 @@ button{{background:#2563eb;border:0;color:#fff;border-radius:6px;padding:3px 10p
 <div class="c"><b>接口清单</b><br>
 <a href="/trend">📈 趋势回放页（/trend）</a> · <a href="/trend5">🛤 五路位移总览（/trend5）</a> · <a href="/api/diagnosis">诊断（/api/diagnosis）</a> · <a href="/api/alarm-events">告警变化（/api/alarm-events）</a><br>
 GET /api/realtime 实时监测 · GET /api/alarms 告警 · GET /api/health 健康度<br>
+GET /api/identify 工况自动识别 · GET /api/stats 系统状态 · GET /api/alarm-events 告警变化记录<br>
 GET /api/workorders 工单 · GET /api/history/测点编码?limit=n 历史查询 · GET /api/points 测点清单<br>
 GET /api/conditions 数据集 · POST /api/play/工况 · POST /api/repair/工单号 · POST /api/stop</div>
 <script>
@@ -437,6 +548,43 @@ def api_conditions():
         out.append({"工况": c, "行数": len(rows),
                     "字段": len(rows[0]) if rows else 0})
     return {"数据集目录": DS_DIR, "工况": out}
+
+
+@app.get("/api/identify")
+def api_identify():
+    """工况自动识别（v2.1 找回）：回放窗口统计特征 → 四工况最近邻匹配 + 置信度
+
+    答辩口径：可解释的统计识别——8 维特征、加权距离、无黑盒；
+    参考特征取自四工况数据集本身，识别"没见过的数据"不在能力范围内（诚实边界）。
+    """
+    return do_identify()
+
+
+@app.get("/api/stats")
+def api_stats():
+    """系统状态：表行数、查询延迟、回放/识别引擎状态（压测与答辩"运行状态"卡片）"""
+    t0 = time.perf_counter()
+    count_sql = {   # 固定白名单表的字面量查询（按键取用，不做拼接）
+        "component": "SELECT count(*) FROM component",
+        "measurement_point": "SELECT count(*) FROM measurement_point",
+        "timeseries_data": "SELECT count(*) FROM timeseries_data",
+        "work_order": "SELECT count(*) FROM work_order",
+        "realtime_value": "SELECT count(*) FROM realtime_value",
+    }
+    counts = {t: q(sql)[0][0] for t, sql in count_sql.items()}
+    latency = round((time.perf_counter() - t0) * 1000, 1)
+    uptime = datetime.now() - START_AT
+    with _play["lock"]:
+        win_rows = len(_play["window"])
+    return {
+        "数据库": {"表行数": counts, "本轮5表查询延迟ms": latency},
+        "回放": {"当前工况": _play["condition"] or "无", "仿真时刻": _play["t"],
+                 "识别窗口行数": win_rows},
+        "服务": {"版本": "2.3", "启动时间": START_AT.strftime("%Y-%m-%d %H:%M:%S"),
+                 "已运行": f"{uptime.days * 24 + uptime.seconds // 3600}h"
+                          f"{uptime.seconds % 3600 // 60:02d}m{uptime.seconds % 60:02d}s",
+                 "识别引擎": "统计特征最近邻（8维特征 × 4工况同相位前缀参考）"},
+    }
 
 
 ADVICE = {
@@ -715,3 +863,5 @@ def _stop_playback():
     _play["stop"].set()
     if _play["thread"] and _play["thread"].is_alive():
         _play["thread"].join(timeout=3)
+    with _play["lock"]:
+        _play["window"].clear()   # 识别窗口重置：新一轮回放从头积累

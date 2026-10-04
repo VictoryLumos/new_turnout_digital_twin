@@ -407,7 +407,9 @@ def test_d_idempotent():
     assert ok3
     with db_session() as cur:
         cur.execute("DELETE FROM timeseries_data WHERE batch LIKE %s", ("IDEM2-%",))
-    record("- 已清理测试批次 IDEM2-*（库回到测试前行数）✓")
+        # 超阈入库触发器写的审计记录同步清理（防测试残留，2026-10-04 检查补充）
+        cur.execute("DELETE FROM alarm_event WHERE source = %s", (IDEM_SRC,))
+    record("- 已清理测试批次 IDEM2-* 与对应告警审计（库回到测试前状态）✓")
 
 
 def test_e_reconnect():
