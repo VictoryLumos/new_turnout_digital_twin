@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS component (
     component_code  TEXT PRIMARY KEY,            -- 构件编码，如 T01-SR-01
     turnout_id      TEXT NOT NULL,               -- 道岔编号，如 T01
     component_type  TEXT NOT NULL,               -- 构件类型：SR/PR/SM/FR/GR/BR
-    model_node      TEXT,                        -- glTF 几何主节点名（A 导出后确认）
+    model_node      TEXT,                        -- 模型主节点名（A 已确认：尖轨三牵引点共用 SwitchRail、心轨两牵引点共用 PointRail）
     asset_id        TEXT UNIQUE,                 -- 资产ID，如 AS-002
     remark          TEXT
 );
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS measurement_point (
     point_type       TEXT NOT NULL,              -- DISP/FORCE/CURR/VIB/TEMP/...（以后缀为准）
     sensor_id        TEXT UNIQUE,                -- 传感器ID，如 SEN-001
     field_name       TEXT NOT NULL UNIQUE,       -- 数据字段（小驼峰），如 switchRailDisp1
-    node_name        TEXT,                       -- 映射表"模型节点名"列原文
+    node_name        TEXT,                       -- 模型节点名（A 交付确认；尖轨=SwitchRail、心轨=PointRail，牵引点编号不作节点名）
     unit             TEXT,                       -- mm/N/A/W/m/s²/℃/kN/0/1
     alarm_threshold  REAL,                       -- 数值大于该值触发告警；空=阈值待定
     remark           TEXT
@@ -105,11 +105,11 @@ CREATE TABLE IF NOT EXISTS realtime_value (
 -- 构件 9 条
 INSERT INTO component (component_code, turnout_id, component_type, model_node, asset_id) VALUES
     ('T01-BR-01', 'T01', 'BR', 'StockRail',     'AS-001'),   -- 基本轨
-    ('T01-SR-01', 'T01', 'SR', 'SwitchRail',    'AS-002'),   -- 尖轨 牵引点1
-    ('T01-SR-02', 'T01', 'SR', 'SwitchRail_2',  'AS-003'),   -- 尖轨 牵引点2
-    ('T01-SR-03', 'T01', 'SR', 'SwitchRail_3',  'AS-004'),   -- 尖轨 牵引点3
-    ('T01-PR-01', 'T01', 'PR', 'PointRail',     'AS-005'),   -- 心轨 牵引点1
-    ('T01-PR-02', 'T01', 'PR', 'PointRail_2',   'AS-006'),   -- 心轨 牵引点2
+    ('T01-SR-01', 'T01', 'SR', 'SwitchRail',    'AS-002'),   -- 尖轨 牵引点1（三个牵引点=同一根尖轨，节点均为 SwitchRail）
+    ('T01-SR-02', 'T01', 'SR', 'SwitchRail',    'AS-003'),   -- 尖轨 牵引点2（同上，2026-10-05 组长裁定：牵引点编号不是钢轨节点）
+    ('T01-SR-03', 'T01', 'SR', 'SwitchRail',    'AS-004'),   -- 尖轨 牵引点3（同上）
+    ('T01-PR-01', 'T01', 'PR', 'PointRail',     'AS-005'),   -- 心轨 牵引点1（两个牵引点=同一根心轨，节点均为 PointRail）
+    ('T01-PR-02', 'T01', 'PR', 'PointRail',     'AS-006'),   -- 心轨 牵引点2（同上）
     ('T01-SM-01', 'T01', 'SM', 'SwitchMachine', 'AS-007'),   -- 转辙机
     ('T01-FR-01', 'T01', 'FR', 'Frog',          'AS-008'),   -- 辙叉
     ('T01-GR-01', 'T01', 'GR', 'GuardRail',     'AS-009')    -- 护轨
@@ -117,20 +117,21 @@ ON CONFLICT (component_code) DO NOTHING;
 
 -- 测点 20 条（point_code, component_code, point_type, sensor_id, field_name, node_name, unit, alarm_threshold）
 INSERT INTO measurement_point (point_code, component_code, point_type, sensor_id, field_name, node_name, unit, alarm_threshold) VALUES
-    -- 尖轨位移（基础版两字段之一；阈值 150mm 来自《统一标准》第 5 节）
+    -- 尖轨位移（基础版两字段之一；阈值 150mm 来自《统一标准》第 5 节；
+    --   三个牵引点同挂单一节点 SwitchRail——A 交付 CONFIRMED，见 T18资产对应关系_v1.0）
     ('T01-SR-01-DISP',  'T01-SR-01', 'DISP',  'SEN-001', 'switchRailDisp1',       'SwitchRail',           'mm',  150),
-    ('T01-SR-02-DISP',  'T01-SR-02', 'DISP',  'SEN-002', 'switchRailDisp2',       'SwitchRail_2',         'mm',  NULL),
-    ('T01-SR-03-DISP',  'T01-SR-03', 'DISP',  'SEN-003', 'switchRailDisp3',       'SwitchRail_3',         'mm',  NULL),
-    -- 尖轨牵引力
-    ('T01-SR-01-FORCE', 'T01-SR-01', 'FORCE', 'SEN-004', 'switchRailForce1',      'SwitchRail_1_FORCE',   'N',   NULL),
-    ('T01-SR-02-FORCE', 'T01-SR-02', 'FORCE', 'SEN-005', 'switchRailForce2',      'SwitchRail_2_FORCE',   'N',   NULL),
-    ('T01-SR-03-FORCE', 'T01-SR-03', 'FORCE', 'SEN-006', 'switchRailForce3',      'SwitchRail_3_FORCE',   'N',   NULL),
-    -- 心轨位移（基础版两字段之一；阈值 100mm）
+    ('T01-SR-02-DISP',  'T01-SR-02', 'DISP',  'SEN-002', 'switchRailDisp2',       'SwitchRail',           'mm',  NULL),
+    ('T01-SR-03-DISP',  'T01-SR-03', 'DISP',  'SEN-003', 'switchRailDisp3',       'SwitchRail',           'mm',  NULL),
+    -- 尖轨牵引力（挂尖轨本体节点，不再用 *_N_FORCE 这类"牵引点编号节点"）
+    ('T01-SR-01-FORCE', 'T01-SR-01', 'FORCE', 'SEN-004', 'switchRailForce1',      'SwitchRail',           'N',   NULL),
+    ('T01-SR-02-FORCE', 'T01-SR-02', 'FORCE', 'SEN-005', 'switchRailForce2',      'SwitchRail',           'N',   NULL),
+    ('T01-SR-03-FORCE', 'T01-SR-03', 'FORCE', 'SEN-006', 'switchRailForce3',      'SwitchRail',           'N',   NULL),
+    -- 心轨位移（基础版两字段之一；阈值 100mm；两个牵引点同挂单一节点 PointRail）
     ('T01-PR-01-DISP',  'T01-PR-01', 'DISP',  'SEN-007', 'pointRailDisp1',        'PointRail',            'mm',  100),
-    ('T01-PR-02-DISP',  'T01-PR-02', 'DISP',  'SEN-008', 'pointRailDisp2',        'PointRail_2',          'mm',  NULL),
-    -- 心轨牵引力
-    ('T01-PR-01-FORCE', 'T01-PR-01', 'FORCE', 'SEN-009', 'pointRailForce1',       'PointRail_1_FORCE',    'N',   NULL),
-    ('T01-PR-02-FORCE', 'T01-PR-02', 'FORCE', 'SEN-010', 'pointRailForce2',       'PointRail_2_FORCE',    'N',   NULL),
+    ('T01-PR-02-DISP',  'T01-PR-02', 'DISP',  'SEN-008', 'pointRailDisp2',        'PointRail',            'mm',  NULL),
+    -- 心轨牵引力（挂心轨本体节点）
+    ('T01-PR-01-FORCE', 'T01-PR-01', 'FORCE', 'SEN-009', 'pointRailForce1',       'PointRail',            'N',   NULL),
+    ('T01-PR-02-FORCE', 'T01-PR-02', 'FORCE', 'SEN-010', 'pointRailForce2',       'PointRail',            'N',   NULL),
     -- 转辙机电流/功率/锁闭状态
     ('T01-SM-01-CURR',  'T01-SM-01', 'CURR',  'SEN-011', 'switchMachineCurrent',  'SwitchMachine',        'A',   NULL),
     ('T01-SM-01-POWER', 'T01-SM-01', 'POWER', 'SEN-012', 'switchMachinePower',    'SwitchMachine_Power',  'W',   NULL),
